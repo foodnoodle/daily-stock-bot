@@ -1,0 +1,32 @@
+name: Daily Stock Index Fetcher
+
+on:
+  schedule:
+    # UTC 時間 00:00 對應台灣時間 08:00
+    - cron: '0 0 * * *'
+  # 讓你可以在網頁上手動按按鈕測試
+  workflow_dispatch:
+
+jobs:
+  run-analysis:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code (下載程式碼)
+        uses: actions/checkout@v3
+
+      - name: Set up Python (設定 Python 環境)
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies (安裝套件)
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run script (執行並發送通知)
+        env:
+          # 將剛剛設定的 Secret 注入到環境變數中
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python main.py
