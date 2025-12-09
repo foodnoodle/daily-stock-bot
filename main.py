@@ -8,6 +8,10 @@ from naaim_index import fetch_naaim_exposure_index
 from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
 import concurrent.futures
+import os
+import requests
+import io
+import sys
 
 # 控制各指標是否執行
 RUN_AAII = True
@@ -243,7 +247,51 @@ def judge_signal():
     if failed_keys:
         print(f"\n以下指標爬取失敗: {', '.join(failed_keys)}")
 
+# --- 新增的 Discord 發送功能 ---
+def send_to_discord(message_content):
+    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook_url:
+        print("❌ 錯誤：未設定 DISCORD_WEBHOOK_URL 環境變數，無法發送通知。")
+        return
+
+    # Discord 限制單則訊息 2000 字，這裡做簡單的防呆切分 (如果報告真的很長)
+    if len(message_content) > 1900:
+        message_content = message_content[:1900] + "\n... (內容過長已截斷)"
+
+    data = {
+        "content": f"```\n{message_content}\n```" # 使用程式碼區塊格式讓排版較好看
+    }
+
+    try:
+        response = requests.post(webhook_url, json=data)
+        response.raise_for_status()
+        print("✅ Discord 通知發送成功！")
+    except Exception as e:
+        print(f"❌ Discord 通知發送失敗: {e}")
+
 if __name__ == "__main__":
-    judge_signal()
+    # 使用 StringIO 攔截 print 的輸出結果
+    captured_output = io.StringIO()
+    sys.stdout = captured_output
+
+    try:
+        # 執行主程式
+        judge_signal()
+    except Exception as e:
+        print(f"執行過程中發生未預期的錯誤: {e}")
+    finally:
+        # 恢復標準輸出，這樣才能看到上面的錯誤訊息 (如果有的話)
+        sys.stdout = sys.__stdout__
+
+    # 取得攔截到的文字報告
+    report_text = captured_output.getvalue()
+
+    # 1. 依舊印在 Console (給 GitHub Actions 紀錄看)
+    print(report_text)
+
+    # 2. 發送到 Discord
+    print("正在傳送 Discord 通知...")
+    send_to_discord(report_text)
+
 
 input("\n所有數據已顯示完畢，請按 Enter 鍵關閉視窗...")
