@@ -4,7 +4,7 @@ import os
 import sys
 import io
 import requests
-import concurrent.futures
+import time
 
 # 引入你的其他模組
 from aaii_index import fetch_aaii_bull_bear_diff
@@ -27,34 +27,49 @@ RUN_ABOVE_200_DAYS = True
 def fetch_all_indices():
     results = {}
     failed_keys = []
-    # 第一次爬取
-    with concurrent.futures.ThreadPoolExecutor() as executor:
-        futures = {}
-        if RUN_AAII:
-            futures['AAII'] = executor.submit(fetch_aaii_bull_bear_diff)
-        if RUN_PUT_CALL:
-            futures['PUT_CALL'] = executor.submit(fetch_total_put_call_ratio)
-        if RUN_VIX:
-            futures['VIX'] = executor.submit(fetch_vix_index)
-        if RUN_CNN:
-            futures['CNN'] = executor.submit(fetch_fear_greed_meter)
-        if RUN_NAAIM:
-            futures['NAAIM'] = executor.submit(fetch_naaim_exposure_index)
-        if RUN_SKEW:
-            futures['SKEW'] = executor.submit(fetch_skew_index)
-        if RUN_ABOVE_200_DAYS:
-            futures['ABOVE_200_DAYS'] = executor.submit(fetch_above_200_days_average)
-        for key, future in futures.items():
-            try:
-                results[key] = future.result()
-            except Exception as e:
-                results[key] = f"抓取過程中發生錯誤: {e}"
+    
+    print("🚀 開始依序抓取數據 (避免資源超載)...")
 
-    # 檢查失敗指標，進行快取清除並重爬 (略過複雜邏輯，保持簡單)
-    # 最終失敗的指標
+    # 定義一個 helper 函式來執行抓取與錯誤處理
+    def run_fetcher(name, fetch_func):
+        print(f"[{name}] 正在抓取...")
+        try:
+            # 執行抓取
+            res = fetch_func()
+            return res
+        except Exception as e:
+            return f"抓取過程中發生錯誤: {e}"
+
+    # --- 改為依序執行 (Sequential Execution) ---
+    
+    if RUN_AAII:
+        results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
+        
+    if RUN_PUT_CALL:
+        results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
+        
+    if RUN_VIX:
+        results['VIX'] = run_fetcher('VIX', fetch_vix_index)
+        
+    if RUN_CNN:
+        results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
+        
+    if RUN_NAAIM:
+        results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
+        
+    if RUN_SKEW:
+        results['SKEW'] = run_fetcher('SKEW', fetch_skew_index)
+        
+    if RUN_ABOVE_200_DAYS:
+        results['ABOVE_200_DAYS'] = run_fetcher('ABOVE_200_DAYS', fetch_above_200_days_average)
+
+    # 檢查失敗指標
     for key, value in results.items():
-        if isinstance(value, str) and value.startswith("抓取過程中發生錯誤"):
+        # 如果回傳是字串且包含錯誤訊息，或者結果是 None
+        if (isinstance(value, str) and "錯誤" in value) or value is None:
             failed_keys.append(key)
+            print(f"⚠️ {key} 失敗: {value}")
+            
     return results, failed_keys
 
 def judge_signal():
@@ -216,7 +231,6 @@ def judge_signal():
 # --- 新增的 Discord 發送功能 ---
 def send_to_discord(message_content):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-    # 如果沒有設定 webhook，直接返回，不報錯
     if not webhook_url:
         print("❌ 未設定 DISCORD_WEBHOOK_URL，跳過發送通知。")
         return
@@ -238,48 +252,30 @@ def send_to_discord(message_content):
     except Exception as e:
         print(f"❌ Discord 通知發送失敗: {e}")
 
-# --- 智慧暫停功能 (關鍵修復) ---
+# --- 智慧暫停功能 ---
 def pause_for_exit():
-    """
-    如果是 GitHub Actions 環境或非互動式模式，直接跳過暫停。
-    如果是本機執行，則等待使用者按 Enter。
-    """
-    # 檢查是否在 GitHub Actions 環境 (GITHUB_ACTIONS=true) 或 非互動模式 (sys.stdin.isatty() 為 False)
     if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdin.isatty():
         print("(雲端執行模式：跳過暫停，直接結束程式)")
         return
-    
     try:
         input("\n所有數據已顯示完畢，請按 Enter 鍵關閉視窗...")
     except EOFError:
         pass
 
 if __name__ == "__main__":
-    # 使用 StringIO 攔截 print 的輸出結果，為了傳給 Discord
     captured_output = io.StringIO()
-    # 備份原本的 stdout
     original_stdout = sys.stdout
-    # 將 stdout 轉向到我們的變數
     sys.stdout = captured_output
     
     try:
-        # 執行主程式
         judge_signal()
     except Exception as e:
         print(f"執行過程中發生未預期的錯誤: {e}")
     finally:
-        # 恢復標準輸出，這樣才能在螢幕上看到東西
         sys.stdout = original_stdout
 
-    # 取得攔截到的文字報告
     report_text = captured_output.getvalue()
-    
-    # 1. 印在 Console (給 GitHub Actions 紀錄看，或是你在電腦上看)
     print(report_text)
-    
-    # 2. 發送到 Discord
     print("正在準備傳送 Discord 通知...")
     send_to_discord(report_text)
-    
-    # 3. 智慧暫停 (這就是修復 EOFError 的關鍵！)
     pause_for_exit()
