@@ -11,7 +11,9 @@ def fetch_aaii_bull_bear_diff():
     """爬取 AAII 最新一筆看多與看空百分比，並計算差值"""
     TARGET_URL = "https://www.stockq.org/economy/aaiisurvey.php"
     chrome_options = Options()
-    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
+    chrome_options.add_argument("--headless")  # 關鍵：無頭模式
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")    chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
     service = Service(ChromeDriverManager().install())
     driver = webdriver.Chrome(service=service, options=chrome_options)
     try:
@@ -33,3 +35,4 @@ def fetch_aaii_bull_bear_diff():
         return None, None, f"抓取過程中發生錯誤: {e}"
     finally:
         driver.quit()
+
