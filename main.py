@@ -1,12 +1,12 @@
 # --- 程式主要執行區 ---
 
 import os
-import requests
-import io
 import sys
+import io
+import requests
 import concurrent.futures
 
-# 引用你的其他模組
+# 引入你的其他模組
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from vix import fetch_vix_index
@@ -51,8 +51,6 @@ def fetch_all_indices():
                 results[key] = f"抓取過程中發生錯誤: {e}"
 
     # 檢查失敗指標，進行快取清除並重爬 (略過複雜邏輯，保持簡單)
-    # ... (原本的重試邏輯保留) ...
-    
     # 最終失敗的指標
     for key, value in results.items():
         if isinstance(value, str) and value.startswith("抓取過程中發生錯誤"):
@@ -112,10 +110,8 @@ def judge_signal():
     if RUN_CNN and 'CNN' not in failed_keys:
         value = results.get('CNN')
         try:
-            # 處理可能帶有文字的數值
             val_str = str(value).split()[0] 
             val = float(val_str)
-            
             if val <= 25:
                 cnn_signal = "極度恐懼"
                 cnn_status = "市場可能過度恐慌"
@@ -138,8 +134,6 @@ def judge_signal():
                 cnn_strategy = "減少投資或出場"
             else:
                 cnn_signal = "無法判斷"
-                cnn_status = "-"
-                cnn_strategy = "-"
         except:
             cnn_signal = "無法判斷"
             cnn_status = "-"
@@ -194,7 +188,6 @@ def judge_signal():
 
     # 統計市場情緒
     signals = []
-    # 這裡只簡單統計有成功抓到的
     current_signals = [aaii_signal, put_call_signal, vix_signal, naaim_signal, skew_signal, above_200_signal]
     for s in current_signals:
         if "偏多" in s: signals.append("偏多")
@@ -223,8 +216,9 @@ def judge_signal():
 # --- 新增的 Discord 發送功能 ---
 def send_to_discord(message_content):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
+    # 如果沒有設定 webhook，直接返回，不報錯
     if not webhook_url:
-        print("❌ 錯誤：未設定 DISCORD_WEBHOOK_URL 環境變數，無法發送通知。")
+        print("❌ 未設定 DISCORD_WEBHOOK_URL，跳過發送通知。")
         return
 
     # Discord 限制單則訊息 2000 字
@@ -237,14 +231,35 @@ def send_to_discord(message_content):
     
     try:
         response = requests.post(webhook_url, json=data)
-        response.raise_for_status()
-        print("✅ Discord 通知發送成功！")
+        if response.status_code in [200, 204]:
+            print("✅ Discord 通知發送成功！")
+        else:
+            print(f"❌ Discord 通知發送失敗: {response.status_code}")
     except Exception as e:
         print(f"❌ Discord 通知發送失敗: {e}")
 
+# --- 智慧暫停功能 (關鍵修復) ---
+def pause_for_exit():
+    """
+    如果是 GitHub Actions 環境或非互動式模式，直接跳過暫停。
+    如果是本機執行，則等待使用者按 Enter。
+    """
+    # 檢查是否在 GitHub Actions 環境 (GITHUB_ACTIONS=true) 或 非互動模式 (sys.stdin.isatty() 為 False)
+    if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdin.isatty():
+        print("(雲端執行模式：跳過暫停，直接結束程式)")
+        return
+    
+    try:
+        input("\n所有數據已顯示完畢，請按 Enter 鍵關閉視窗...")
+    except EOFError:
+        pass
+
 if __name__ == "__main__":
-    # 使用 StringIO 攔截 print 的輸出結果
+    # 使用 StringIO 攔截 print 的輸出結果，為了傳給 Discord
     captured_output = io.StringIO()
+    # 備份原本的 stdout
+    original_stdout = sys.stdout
+    # 將 stdout 轉向到我們的變數
     sys.stdout = captured_output
     
     try:
@@ -253,17 +268,18 @@ if __name__ == "__main__":
     except Exception as e:
         print(f"執行過程中發生未預期的錯誤: {e}")
     finally:
-        # 恢復標準輸出
-        sys.stdout = sys.__stdout__
+        # 恢復標準輸出，這樣才能在螢幕上看到東西
+        sys.stdout = original_stdout
 
     # 取得攔截到的文字報告
     report_text = captured_output.getvalue()
     
-    # 1. 印在 Console (給 GitHub Actions 紀錄看)
+    # 1. 印在 Console (給 GitHub Actions 紀錄看，或是你在電腦上看)
     print(report_text)
     
     # 2. 發送到 Discord
-    print("正在傳送 Discord 通知...")
+    print("正在準備傳送 Discord 通知...")
     send_to_discord(report_text)
     
-    # ⚠️ 注意：我已經移除了 input()，這樣雲端才不會卡住！
+    # 3. 智慧暫停 (這就是修復 EOFError 的關鍵！)
+    pause_for_exit()
