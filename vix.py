@@ -11,7 +11,11 @@ def fetch_vix_index():
     import time, random
     """爬取 Google 財經 VIX 指數最新數值"""
     TARGET_URL = "https://www.google.com/finance/quote/VIX:INDEXCBOE?sa=X&ved=2ahUKEwiDl7b9ut-OAxVCn68BHQwuHKEQ3ecFegQIKBAb"
+
     chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
     # 偽裝常見瀏覽器資訊
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
     chrome_options.add_argument('--lang=zh-TW,zh;q=0.9,en;q=0.8')
@@ -46,3 +50,4 @@ def fetch_vix_index():
         return f"抓取過程中發生錯誤: {e}"
     finally:
         driver.quit()
+
