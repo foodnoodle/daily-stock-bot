@@ -1,4 +1,4 @@
-# --- dev_main.py (v2.4: API 化 + 新增 10 年期公債) ---
+# --- dev_main.py (v2.5: 新增美元指數 + 風險胃口指標) ---
 import os
 import sys
 import requests
@@ -6,44 +6,100 @@ import time
 import datetime
 import yfinance as yf 
 
-# 引入你的其他模組
+# 引入你的其他模組 (部分爬蟲仍保留)
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
-from vix import fetch_vix_index
 from put_call_ratio import fetch_total_put_call_ratio
 from naaim_index import fetch_naaim_exposure_index
 from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
 
-# 控制各指標是否執行
+# --- [設定開關] ---
 RUN_AAII = True
 RUN_CNN = True
-RUN_VIX = True
 RUN_PUT_CALL = True
 RUN_NAAIM = True
 RUN_SKEW = True
 RUN_ABOVE_200_DAYS = True
-RUN_BOND_YIELD = True # [新增] 公債殖利率開關
 
-# [新增] 抓取 10 年期公債殖利率 (直接定義在這裡，方便維護)
-def fetch_10y_treasury_yield():
+# API 指標開關
+RUN_VIX = True
+RUN_BOND_YIELD = True
+RUN_DXY = True          # [新增] 美元指數
+RUN_RISK_RATIO = True   # [新增] 風險胃口 (XLY/XLP)
+
+
+# --- [API 抓取區] 使用 yfinance (穩定、快速) ---
+
+def fetch_vix_index():
+    """抓取 VIX 恐慌指數"""
     try:
-        # ^TNX 是 Yahoo Finance 的 10 年期公債收益率代號
+        ticker = yf.Ticker("^VIX")
+        data = ticker.history(period="1d")
+        if not data.empty:
+            return f"{data['Close'].iloc[-1]:.2f}"
+        return "抓取失敗"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+def fetch_10y_treasury_yield():
+    """抓取 10 年期公債殖利率"""
+    try:
         ticker = yf.Ticker("^TNX")
         data = ticker.history(period="1d")
         if not data.empty:
             val = data['Close'].iloc[-1]
-            # Yahoo 的 TNX 有時是 42.5 (代表 4.25%)，有時是 4.25
-            # 為了保險，如果數值大於 20，我們就除以 10
-            if val > 20:
-                val = val / 10
+            if val > 20: val = val / 10 # 修正 Yahoo 數據單位的潛在問題
             return f"{val:.2f}%"
         return "抓取失敗"
     except Exception as e:
         return f"錯誤: {e}"
 
-# 1. 抓取大盤行情 (指數版)
+def fetch_dxy_index():
+    """[新增] 抓取美元指數 (DXY)"""
+    try:
+        # Yahoo Finance 代號為 DX-Y.NYB
+        ticker = yf.Ticker("DX-Y.NYB")
+        data = ticker.history(period="1d")
+        if not data.empty:
+            return f"{data['Close'].iloc[-1]:.2f}"
+        return "抓取失敗"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+def fetch_risk_on_off_ratio():
+    """[新增] 計算 XLY/XLP 風險胃口比率"""
+    try:
+        # 一次抓取兩檔 ETF
+        tickers = ["XLY", "XLP"]
+        # 抓 5 天以確保有足夠資料計算漲跌
+        data = yf.download(tickers, period="5d", progress=False)['Close']
+        
+        if len(data) >= 2:
+            # 取得最新與前一天的收盤價
+            xly_now = data['XLY'].iloc[-1]
+            xlp_now = data['XLP'].iloc[-1]
+            xly_prev = data['XLY'].iloc[-2]
+            xlp_prev = data['XLP'].iloc[-2]
+            
+            # 計算比率
+            ratio_now = xly_now / xlp_now
+            ratio_prev = xly_prev / xlp_prev
+            
+            # 判斷趨勢
+            change = ratio_now - ratio_prev
+            icon = "↗️" if change > 0 else "↘️"
+            
+            return f"{ratio_now:.2f} ({icon})"
+        return "數據不足"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+
+# --- [主程式區] ---
+
 def fetch_market_data():
+    """抓取大盤行情"""
     try:
         tickers = ["^GSPC", "^NDX"]
         data = yf.download(tickers, period="2d", progress=False)['Close']
@@ -73,55 +129,54 @@ def fetch_market_data():
     except Exception as e:
         return f"無法取得大盤數據: {e}"
 
-# 2. 抓取指標 (依序執行，含重試機制)
 def fetch_all_indices():
+    """抓取所有指標 (依序執行，含重試機制)"""
     results = {}
     failed_keys = []
     print("🚀 開始依序抓取數據...")
 
     def run_fetcher(name, fetch_func):
-        max_retries = 3 # 設定重試次數
-        
+        max_retries = 3
         for i in range(max_retries):
             attempt = i + 1
             if attempt > 1:
-                print(f"[{name}] ⚠️ 抓取失敗，正在重試 (第 {attempt}/{max_retries} 次)...")
+                print(f"[{name}] ⚠️ 抓取失敗，重試中 ({attempt}/{max_retries})...")
             else:
                 print(f"[{name}] 正在抓取...")
             
             try:
                 result = fetch_func()
                 
-                # --- 判斷是否為失敗結果 ---
+                # 錯誤檢查
                 is_error = False
                 error_msg = ""
-                
                 if isinstance(result, str) and "錯誤" in result:
                     is_error = True
                     error_msg = result
                 elif isinstance(result, tuple) and result[0] is None:
                     is_error = True
-                    error_msg = result[2] if len(result) > 2 else "抓取失敗"
+                    error_msg = result[2] if len(result) > 2 else "失敗"
 
-                # --- 處理結果 ---
                 if not is_error:
-                    return result # 成功
+                    return result
                 
                 if attempt == max_retries:
                     print(f"   ❌ [{name}] 最終失敗: {error_msg}")
                     return error_msg
                 else:
-                    time.sleep(2) # 休息一下再試
+                    time.sleep(2)
 
             except Exception as e:
                 if attempt == max_retries:
                     return f"錯誤: {e}"
-                print(f"   ⚠️ 發生例外: {e}")
                 time.sleep(2)
-                
-        return "錯誤: 未知原因失敗"
+        return "錯誤: 未知原因"
 
+    # 執行所有抓取任務
     if RUN_BOND_YIELD: results['BOND_10Y'] = run_fetcher('BOND_10Y', fetch_10y_treasury_yield)
+    if RUN_DXY: results['DXY'] = run_fetcher('DXY', fetch_dxy_index)
+    if RUN_RISK_RATIO: results['RISK_RATIO'] = run_fetcher('RISK_RATIO', fetch_risk_on_off_ratio)
+    
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
     if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
     if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
@@ -135,8 +190,8 @@ def fetch_all_indices():
             failed_keys.append(key)
     return results, failed_keys
 
-# 3. 判斷個別指標情緒狀態 (更新公債邏輯)
 def get_indicator_status(key, value):
+    """判讀數值多空情緒"""
     try:
         val_str = str(value).strip()
         status = "⚪ 中性" 
@@ -159,20 +214,32 @@ def get_indicator_status(key, value):
             elif val < 0.8: status = "🔴 過度看多 (偏空)"
 
         elif key == 'BOND_10Y':
-            # 10年期公債殖利率：越高對科技股/股市壓力越大
             val = float(val_str.replace('%',''))
-            if val > 4.5: status = "🔴 利率過高 (股市承壓)"
-            elif val < 3.5: status = "🟢 利率舒適 (資金寬鬆)"
-            else: status = "⚪ 利率中性"
-            
+            if val > 4.5: status = "🔴 利率過高 (承壓)"
+            elif val < 3.5: status = "🟢 利率舒適 (寬鬆)"
+        
+        elif key == 'DXY':
+            # 美元指數判讀
+            val = float(val_str)
+            if val > 105: status = "🔴 美元強勢 (資金緊縮)"
+            elif val < 101: status = "🟢 美元弱勢 (資金寬鬆)"
+            else: status = "⚪ 美元盤整"
+
+        elif key == 'RISK_RATIO':
+            # 風險胃口 (XLY/XLP)
+            # 根據箭頭符號判斷趨勢
+            if "↗️" in val_str:
+                status = "🟢 風險偏好升 (Risk On)"
+            elif "↘️" in val_str:
+                status = "🔴 風險偏好降 (Risk Off)"
+
         elif key == 'AAII':
             if isinstance(value, tuple):
                 bull, bear, diff = value
                 val_str = f"多{bull}% | 空{bear}%"
                 if diff > 15: status = "🔴 散戶過熱 (偏空)"
                 elif diff < -15: status = "🟢 散戶絕望 (偏多)"
-            else:
-                return val_str, "❓ 格式錯誤"
+            else: return val_str, "❓ 格式錯誤"
 
         elif key == 'NAAIM':
             val = float(val_str)
@@ -182,8 +249,7 @@ def get_indicator_status(key, value):
         elif key == 'SKEW':
             val = float(val_str.replace(',',''))
             if val > 140: status = "🔴 黑天鵝警戒 (偏空)"
-            elif val < 120: status = "🟢 風險情緒平穩 (偏多)"
-            else: status = "⚪ 避險情緒略增 (中性)"
+            elif val < 120: status = "🟢 情緒平穩 (偏多)"
             
         elif key == 'ABOVE_200_DAYS':
             val = float(val_str.replace('%',''))
@@ -195,7 +261,6 @@ def get_indicator_status(key, value):
     except Exception:
         return str(value), "⚠️ 無法判讀"
 
-# 4. 計算總結
 def calculate_sentiment_summary(results):
     bull_signals = 0
     bear_signals = 0
@@ -207,13 +272,12 @@ def calculate_sentiment_summary(results):
 
     conclusion = "⚪ 市場情緒分歧，建議觀望"
     if bull_signals > bear_signals:
-        conclusion = "🟢 市場偏向恐懼 (可能存在機會)"
+        conclusion = "🟢 市場偏向恐懼/機會 (Risk On)"
     elif bear_signals > bull_signals:
-        conclusion = "🔴 市場偏向貪婪/風險高 (建議謹慎)"
+        conclusion = "🔴 市場偏向貪婪/風險 (Risk Off)"
         
-    return f"**偏多訊號(綠)**: {bull_signals} | **偏空訊號(紅)**: {bear_signals}\n👉 {conclusion}"
+    return f"**多方訊號**: {bull_signals} | **空方訊號**: {bear_signals}\n👉 {conclusion}"
 
-# 5. 發送 Discord
 def send_discord_embed(results, market_text, summary_text):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
@@ -222,7 +286,7 @@ def send_discord_embed(results, market_text, summary_text):
 
     today_date = datetime.datetime.now().strftime("%Y-%m-%d")
     
-    # 這裡可以加入 Bond Yield 來輔助判斷顏色，目前仍維持 CNN
+    # 這裡依舊以 CNN 作為卡片主色調
     color = 0x808080 
     try:
         val = float(str(results.get('CNN', '50')).split()[0])
@@ -235,10 +299,13 @@ def send_discord_embed(results, market_text, summary_text):
     fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
 
-    # [調整] 顯示順序，把公債放在前面重要位置
-    order = ['BOND_10Y', 'CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
+    # [調整] 顯示順序，把 總經指標 放在前面
+    order = ['BOND_10Y', 'DXY', 'RISK_RATIO', 'CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
+    
     names = {
-        'BOND_10Y': '🇺🇸 10年期公債殖利率',
+        'BOND_10Y': '🇺🇸 10年債殖利率',
+        'DXY': '💵 美元指數',
+        'RISK_RATIO': '⚖️ 風險胃口 (XLY/XLP)',
         'CNN': '😱 CNN 恐懼貪婪',
         'VIX': '🌪️ VIX 波動率',
         'PUT_CALL': '⚖️ Put/Call Ratio',
@@ -263,7 +330,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (API v2.4)"},
+            "footer": {"text": "Github Actions Auto Bot (API v2.5)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
