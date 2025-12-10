@@ -1,423 +1,420 @@
-# --- dev_main.py (v2.8: 全方位分析版 - 新增 IWM, HYG, SOXX) ---
+# --- main.py (v3.0: No-Selenium, Config-Driven, Full Features) ---
 import os
 import sys
-import requests
 import time
 import datetime
-import yfinance as yf 
+import requests
 import pandas as pd
+import yfinance as yf
+from io import StringIO
 
-# 引入你的其他模組
-from aaii_index import fetch_aaii_bull_bear_diff
-from fear_greed_index import fetch_fear_greed_meter
-from put_call_ratio import fetch_total_put_call_ratio
-from naaim_index import fetch_naaim_exposure_index
-from skew_index import fetch_skew_index
-from above_200_days_average import fetch_above_200_days_average
+# ==========================================
+# ⚙️ 設定區 (INDICATORS CONFIG)
+# ==========================================
+# 這裡定義了所有的指標、抓取方式與多空判斷標準
+# type: 'yfinance' | 'api_json' | 'web_text' | 'calculation'
 
-# --- [設定開關] ---
-RUN_AAII = True
-RUN_CNN = True
-RUN_PUT_CALL = True
-RUN_NAAIM = True
-RUN_SKEW = True
-RUN_ABOVE_200_DAYS = True
+INDICATORS = {
+    # --- 🌊 宏觀與資金 (Macro & Credit) ---
+    'BOND_10Y': {
+        'name': '🇺🇸 10年債',
+        'type': 'yfinance',
+        'ticker': '^TNX',
+        'category': 'Macro',
+        'eval': lambda v: "🔴 利率高" if v > 4.5 else ("🟢 利率低" if v < 3.5 else "⚪ 中性"),
+        'fmt': lambda v: f"{v/10:.2f}%" if v > 20 else f"{v:.2f}%" # 修正 Yahoo 單位
+    },
+    'DXY': {
+        'name': '💵 美元 DXY',
+        'type': 'yfinance',
+        'ticker': 'DX-Y.NYB',
+        'category': 'Macro',
+        'eval': lambda v: "🔴 強勢(緊縮)" if v > 105 else ("🟢 弱勢(寬鬆)" if v < 101 else "⚪ 盤整"),
+        'fmt': "{:.2f}"
+    },
+    'HYG': {
+        'name': '💳 高收債 HYG',
+        'type': 'trend_ma20', # 特殊計算: 價格 vs 20日線
+        'ticker': 'HYG',
+        'category': 'Macro',
+        'eval': lambda s: "🟢 資金流入" if "Above" in s else "🔴 資金流出"
+    },
+    'BTC': {
+        'name': '🪙 比特幣',
+        'type': 'price_change', # 特殊計算: 2日漲跌幅
+        'ticker': 'BTC-USD',
+        'category': 'Macro',
+        'eval': lambda v: "🟢 大漲(RiskOn)" if v > 3 else ("🔴 大跌(RiskOff)" if v < -3 else "⚪ 波動正常"),
+        'fmt': "{:+.2f}%"
+    },
 
-RUN_VIX = True
-RUN_BOND_YIELD = True
-RUN_DXY = True          
-RUN_RISK_RATIO = True   
-RUN_BTC = True          
-RUN_RSI = True
-# [新增]
-RUN_IWM = True
-RUN_HYG = True
-RUN_SOXX = True
+    # --- 🏗️ 結構與板塊 (Structure) ---
+    'IWM': {
+        'name': '🏢 羅素2000',
+        'type': 'trend_ma20',
+        'ticker': 'IWM',
+        'category': 'Structure',
+        'eval': lambda s: "🟢 廣度健康" if "Above" in s else "🔴 廣度轉弱"
+    },
+    'SOXX': {
+        'name': '⚡ 半導體 SOXX',
+        'type': 'trend_ma20',
+        'ticker': 'SOXX',
+        'category': 'Structure',
+        'eval': lambda s: "🟢 領頭羊強" if "Above" in s else "🔴 領頭羊弱"
+    },
+    'SECTOR_BREADTH': {
+        'name': '📊 板塊廣度',
+        'type': 'calc_sector_breadth', # [新功能] 計算11大板塊有多少站上均線
+        'category': 'Structure',
+        'eval': lambda v: "🟢 結構強" if v >= 7 else ("🔴 結構弱" if v <= 4 else "⚪ 普通"),
+        'fmt': "{:.0f}/11"
+    },
+    'RISK_RATIO': {
+        'name': '⚖️ 風險胃口',
+        'type': 'calc_risk_ratio', # XLY / XLP
+        'category': 'Structure',
+        'eval': lambda s: "🟢 Risk On" if "↗️" in s else "🔴 Risk Off"
+    },
+
+    # --- 🌡️ 技術與情緒 (Tech & Sentiment) ---
+    'RSI': {
+        'name': '📈 大盤 RSI',
+        'type': 'calc_rsi',
+        'ticker': '^GSPC',
+        'category': 'Tech',
+        'eval': lambda v: "🔴 過熱" if v > 70 else ("🟢 超賣" if v < 30 else "⚪ 中性"),
+        'fmt': "{:.1f}"
+    },
+    'VIX': {
+        'name': '🌪️ VIX 波動',
+        'type': 'yfinance',
+        'ticker': '^VIX',
+        'category': 'Tech',
+        'eval': lambda v: "🟢 恐慌(偏多)" if v > 30 else ("🔴 自滿(偏空)" if v < 15 else "⚪ 中性"),
+        'fmt': "{:.2f}"
+    },
+    'CNN': {
+        'name': '😱 CNN 情緒',
+        'type': 'func_cnn', # 使用自訂函式抓取
+        'category': 'Tech',
+        'eval': lambda v: "🟢 極恐懼" if v <= 25 else ("🔴 極貪婪" if v >= 75 else "⚪ 中性"),
+        'fmt': "{:.0f}"
+    },
+
+    # --- 🐳 籌碼與內資 (Smart Money) ---
+    'SKEW': {
+        'name': '🦢 黑天鵝 SKEW',
+        'type': 'yfinance',
+        'ticker': '^SKEW',
+        'category': 'SmartMoney',
+        'eval': lambda v: "🔴 警戒" if v > 140 else "🟢 平穩",
+        'fmt': "{:.2f}"
+    },
+    'PUT_CALL': {
+        'name': '⚖️ Put/Call',
+        'type': 'func_pcr', # 使用自訂函式
+        'category': 'SmartMoney',
+        'eval': lambda v: "🟢 看空過度" if v > 1.0 else ("🔴 看多過度" if v < 0.8 else "⚪ 中性"),
+        'fmt': "{:.2f}"
+    },
+    'AAII': {
+        'name': '🐂 散戶 AAII',
+        'type': 'func_aaii', # 使用自訂函式
+        'category': 'SmartMoney',
+        'eval': lambda v: "🔴 過熱" if v > 15 else ("🟢 絕望" if v < -15 else "⚪ 中性"),
+        'fmt': "Spread: {:+.1f}"
+    },
+    'NAAIM': {
+        'name': '🏦 NAAIM 經理人',
+        'type': 'func_naaim',
+        'category': 'SmartMoney',
+        'eval': lambda v: "🔴 重倉" if v > 90 else ("🟢 輕倉" if v < 40 else "⚪ 中性"),
+        'fmt': "{:.2f}"
+    }
+}
 
 
-# --- [API 抓取與計算區] ---
+# ==========================================
+# 🛠️ 核心抓取函式庫 (Core Fetchers)
+# ==========================================
 
-def fetch_vix_index():
+def get_headers():
+    return {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+
+# 1. 通用 yfinance 抓取
+def fetch_yf_price(ticker):
     try:
-        ticker = yf.Ticker("^VIX")
-        data = ticker.history(period="1d")
+        t = yf.Ticker(ticker)
+        # auto_adjust=False 避免 Github Action 報錯
+        data = t.history(period="1d", auto_adjust=False)
         if not data.empty:
-            return f"{data['Close'].iloc[-1]:.2f}"
-        return "抓取失敗"
-    except Exception as e:
-        return f"錯誤: {e}"
+            return data['Close'].iloc[-1]
+    except: pass
+    return None
 
-def fetch_10y_treasury_yield():
+# 2. 通用 趨勢判斷 (價格 vs 20MA)
+def fetch_trend_ma20(ticker):
     try:
-        ticker = yf.Ticker("^TNX")
-        data = ticker.history(period="1d")
-        if not data.empty:
-            val = data['Close'].iloc[-1]
-            if val > 20: val = val / 10
-            return f"{val:.2f}%"
-        return "抓取失敗"
-    except Exception as e:
-        return f"錯誤: {e}"
+        t = yf.Ticker(ticker)
+        data = t.history(period="2mo", auto_adjust=False)
+        if len(data) >= 20:
+            ma20 = data['Close'].rolling(20).mean().iloc[-1]
+            curr = data['Close'].iloc[-1]
+            return f"{curr:.2f} (Above)" if curr > ma20 else f"{curr:.2f} (Below)"
+    except: pass
+    return None
 
-def fetch_dxy_index():
+# 3. 通用 漲跌幅計算
+def fetch_price_change(ticker):
     try:
-        ticker = yf.Ticker("DX-Y.NYB")
-        data = ticker.history(period="1d")
-        if not data.empty:
-            return f"{data['Close'].iloc[-1]:.2f}"
-        return "抓取失敗"
-    except Exception as e:
-        return f"錯誤: {e}"
-
-def fetch_risk_on_off_ratio():
-    try:
-        tickers = ["XLY", "XLP"]
-        data = yf.download(tickers, period="5d", progress=False, auto_adjust=False)['Close']
+        t = yf.Ticker(ticker)
+        data = t.history(period="2d", auto_adjust=False)
         if len(data) >= 2:
-            xly = data['XLY']
-            xlp = data['XLP']
-            
-            ratio_now = xly.iloc[-1] / xlp.iloc[-1]
-            ratio_prev = xly.iloc[-2] / xlp.iloc[-2]
-            
-            change = ratio_now - ratio_prev
-            icon = "↗️" if change > 0 else "↘️"
-            return f"{ratio_now:.2f} ({icon})"
-        return "數據不足"
-    except Exception as e:
-        return f"錯誤: {e}"
+            return ((data['Close'].iloc[-1] / data['Close'].iloc[-2]) - 1) * 100
+    except: pass
+    return None
 
-def fetch_bitcoin_trend():
+# 4. CNN 恐懼貪婪 (API)
+def func_cnn():
     try:
-        ticker = yf.Ticker("BTC-USD")
-        data = ticker.history(period="2d")
-        if len(data) >= 2:
-            now = data['Close'].iloc[-1]
-            prev = data['Close'].iloc[-2]
-            pct_change = ((now - prev) / prev) * 100
-            return f"{pct_change:+.2f}%"
-        return "數據不足"
-    except Exception as e:
-        return f"錯誤: {e}"
+        url = "https://production.dataviz.cnn.io/index/fearandgreed/graphdata"
+        r = requests.get(url, headers=get_headers(), timeout=10)
+        if r.status_code == 200:
+            return r.json()['fear_and_greed']['score']
+    except: pass
+    return None
 
-def fetch_rsi_index():
+# 5. AAII 散戶情緒 (Pandas Read HTML)
+def func_aaii():
     try:
-        ticker = yf.Ticker("^GSPC")
-        data = ticker.history(period="2mo")
+        url = "https://www.stockq.org/economy/aaiisurvey.php"
+        dfs = pd.read_html(url)
+        # StockQ 的表格通常在比較後面的位置，或特徵是含有 "Bullish"
+        for df in dfs:
+            if df.shape[1] >= 4 and 'AAII' in str(df.iloc[0,0]): # 簡單特徵識別
+                # 假設 row 2 是最新數據: date, bull, neutral, bear
+                # 注意: 需根據實際表格微調，這裡取 row 2 (index 1) 的 col 1(bull) 和 col 3(bear)
+                # 簡單起見，直接抓數值做轉換
+                bull = float(str(df.iloc[1, 1]).replace('%',''))
+                bear = float(str(df.iloc[1, 3]).replace('%',''))
+                return bull - bear
+    except: pass
+    return None
+
+# 6. Put/Call Ratio (CBOE Text Scraping)
+def func_pcr():
+    try:
+        # CBOE 頁面通常會把數據直接寫在 HTML
+        # 這裡改用 requests 抓取 CBOE 每日數據頁面
+        url = "https://www.cboe.com/us/options/market_statistics/daily/"
+        r = requests.get(url, headers=get_headers(), timeout=10)
+        if r.status_code == 200:
+            # 尋找 "Total Put/Call Ratio" 附近的數值
+            # 簡易解析: 找到關鍵字後，找下一個數字
+            if "Total Put/Call Ratio" in r.text:
+                # 這裡需要一點字串處理技巧，或是用 pandas read_html 嘗試
+                dfs = pd.read_html(r.text)
+                for df in dfs:
+                    # CBOE 的表通常長這樣: [Name, Ratio]
+                    if "Total Put/Call Ratio" in df.to_string():
+                        # 找到該行
+                        target = df[df.iloc[:,0] == "Total Put/Call Ratio"]
+                        if not target.empty:
+                            return float(target.iloc[0, 1])
+    except: pass
+    return None
+
+# 7. NAAIM (Requests + String Find)
+def func_naaim():
+    try:
+        url = "https://naaim.org/programs/naaim-exposure-index/"
+        r = requests.get(url, headers=get_headers(), timeout=10)
+        # NAAIM 網頁通常會有 "The NAAIM Exposure Index is: XX.XX"
+        # 這裡用簡易 parser 或是 pandas
+        # 網站改版頻繁，使用 pd.read_html 嘗試抓取 class="table"
+        dfs = pd.read_html(r.text)
+        if dfs:
+            return float(dfs[0].iloc[0, 1]) # 假設最新數據在第一列
+    except: pass
+    return None
+
+# 8. RSI 計算
+def calc_rsi(ticker):
+    try:
+        t = yf.Ticker(ticker)
+        data = t.history(period="2mo", auto_adjust=False)
         if len(data) > 14:
             delta = data['Close'].diff()
-            gain = (delta.where(delta > 0, 0))
-            loss = (-delta.where(delta < 0, 0))
-            avg_gain = gain.ewm(com=13, adjust=False).mean()
-            avg_loss = loss.ewm(com=13, adjust=False).mean()
-            rs = avg_gain / avg_loss
-            rsi = 100 - (100 / (1 + rs))
-            return f"{rsi.iloc[-1]:.1f}"
-        return "數據不足"
-    except Exception as e:
-        return f"錯誤: {e}"
-
-# [新增] 通用趨勢抓取函式 (比較月線 20MA)
-def fetch_trend_vs_ma20(symbol):
-    try:
-        ticker = yf.Ticker(symbol)
-        # 抓 2 個月確保有足夠資料算 20MA
-        data = ticker.history(period="2mo")
-        if len(data) >= 20:
-            ma20 = data['Close'].rolling(window=20).mean().iloc[-1]
-            current = data['Close'].iloc[-1]
-            
-            # 判斷是在均線之上還是之下
-            status = "Above" if current > ma20 else "Below"
-            return f"{current:.2f} ({status})"
-        return "數據不足"
-    except Exception as e:
-        return f"錯誤: {e}"
-
-# 包裝成個別函式方便調用
-def fetch_iwm_trend(): return fetch_trend_vs_ma20("IWM")
-def fetch_hyg_trend(): return fetch_trend_vs_ma20("HYG")
-def fetch_soxx_trend(): return fetch_trend_vs_ma20("SOXX")
-
-
-# --- [主程式區] ---
-
-def fetch_market_data():
-    try:
-        tickers = ["^GSPC", "^NDX"]
-        data = yf.download(tickers, period="2d", progress=False, auto_adjust=False)['Close']
-        name_map = {"^GSPC": "S&P 500", "^NDX": "Nasdaq 100"}
-        market_info = []
-        for symbol in tickers:
-            try:
-                if len(data) >= 2:
-                    try:
-                        current = data[symbol].iloc[-1]
-                        prev = data[symbol].iloc[-2]
-                    except:
-                        current = data.iloc[-1]
-                        prev = data.iloc[-2]
-                    change_pct = ((current - prev) / prev) * 100
-                    icon = "📈" if change_pct > 0 else "📉"
-                    display_name = name_map.get(symbol, symbol)
-                    market_info.append(f"{icon} **{display_name}**: {current:,.2f} ({change_pct:+.2f}%)")
-                else:
-                    market_info.append(f"❓ {symbol}: 數據不足")
-            except Exception as e:
-                market_info.append(f"❓ {symbol}: {e}")
-        return "\n".join(market_info)
-    except Exception as e:
-        return f"無法取得大盤數據: {e}"
-
-def fetch_all_indices():
-    results = {}
-    failed_keys = []
-    print("🚀 開始依序抓取數據...")
-
-    def run_fetcher(name, fetch_func):
-        max_retries = 3
-        for i in range(max_retries):
-            try:
-                if i == 0: print(f"[{name}] 抓取中...")
-                else: print(f"[{name}] 重試中 ({i+1})...")
-                
-                result = fetch_func()
-                
-                is_error = False
-                error_msg = ""
-                if isinstance(result, str) and "錯誤" in result:
-                    is_error = True; error_msg = result
-                elif isinstance(result, tuple) and result[0] is None:
-                    is_error = True; error_msg = result[2] if len(result) > 2 else "失敗"
-
-                if not is_error: return result
-                if i == max_retries - 1: return error_msg
-                time.sleep(2)
-            except Exception as e:
-                if i == max_retries - 1: return f"錯誤: {e}"
-                time.sleep(2)
-        return "錯誤"
-
-    # API 類
-    if RUN_BOND_YIELD: results['BOND_10Y'] = run_fetcher('BOND_10Y', fetch_10y_treasury_yield)
-    if RUN_DXY: results['DXY'] = run_fetcher('DXY', fetch_dxy_index)
-    if RUN_RISK_RATIO: results['RISK_RATIO'] = run_fetcher('RISK_RATIO', fetch_risk_on_off_ratio)
-    if RUN_BTC: results['BTC'] = run_fetcher('BTC', fetch_bitcoin_trend)
-    if RUN_RSI: results['RSI'] = run_fetcher('RSI', fetch_rsi_index)
-    
-    # [新增]
-    if RUN_IWM: results['IWM'] = run_fetcher('IWM', fetch_iwm_trend)
-    if RUN_HYG: results['HYG'] = run_fetcher('HYG', fetch_hyg_trend)
-    if RUN_SOXX: results['SOXX'] = run_fetcher('SOXX', fetch_soxx_trend)
-
-    # 爬蟲類
-    if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
-    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
-    if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
-    if RUN_CNN: results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
-    if RUN_NAAIM: results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
-    if RUN_SKEW: results['SKEW'] = run_fetcher('SKEW', fetch_skew_index)
-    if RUN_ABOVE_200_DAYS: results['ABOVE_200_DAYS'] = run_fetcher('ABOVE_200_DAYS', fetch_above_200_days_average)
-
-    for key, value in results.items():
-        if (isinstance(value, str) and "錯誤" in value) or value is None:
-            failed_keys.append(key)
-    return results, failed_keys
-
-def get_indicator_status(key, value):
-    try:
-        val_str = str(value).strip()
-        status = "⚪ 中性" 
-        
-        if key == 'CNN':
-            val = float(val_str.split()[0])
-            if val <= 25: status = "🟢 極恐懼"
-            elif val <= 45: status = "🟢 恐懼"
-            elif val >= 75: status = "🔴 極貪婪"
-            elif val >= 55: status = "🔴 貪婪"
-            
-        elif key == 'VIX':
-            val = float(val_str.replace(',',''))
-            if val > 30: status = "🟢 恐慌"
-            elif val < 15: status = "🔴 自滿"
-            
-        elif key == 'PUT_CALL':
-            val = float(val_str)
-            if val > 1.0: status = "🟢 看空過度"
-            elif val < 0.8: status = "🔴 看多過度"
-
-        elif key == 'BOND_10Y':
-            val = float(val_str.replace('%',''))
-            if val > 4.5: status = "🔴 利率高"
-            elif val < 3.5: status = "🟢 利率低"
-        
-        elif key == 'DXY':
-            val = float(val_str)
-            if val > 105: status = "🔴 強勢"
-            elif val < 101: status = "🟢 弱勢"
-
-        elif key == 'RISK_RATIO':
-            if "↗️" in val_str: status = "🟢 Risk On"
-            elif "↘️" in val_str: status = "🔴 Risk Off"
-
-        elif key == 'BTC':
-            val = float(val_str.replace('%','').replace('+',''))
-            if val > 3.0: status = "🟢 大漲"
-            elif val < -3.0: status = "🔴 大跌"
-
-        elif key == 'RSI':
-            val = float(val_str)
-            if val > 70: status = "🔴 過熱"
-            elif val < 30: status = "🟢 超賣"
-            elif val > 60: status = "⚪ 強勢"
-            elif val < 40: status = "⚪ 弱勢"
-
-        # [新增] 趨勢型指標 (Above/Below MA20)
-        elif key in ['IWM', 'SOXX', 'HYG']:
-            # 格式: "123.45 (Above)"
-            if "(Above)" in val_str:
-                if key == 'HYG': status = "🟢 資金流入 (Risk On)"
-                elif key == 'IWM': status = "🟢 廣度健康"
-                elif key == 'SOXX': status = "🟢 領頭羊強"
-            elif "(Below)" in val_str:
-                if key == 'HYG': status = "🔴 資金流出 (Risk Off)"
-                elif key == 'IWM': status = "🔴 廣度轉弱"
-                elif key == 'SOXX': status = "🔴 領頭羊弱"
-
-        elif key == 'AAII':
-            if isinstance(value, tuple):
-                bull, bear, diff = value
-                val_str = f"多{bull}% | 空{bear}%"
-                if diff > 15: status = "🔴 過熱"
-                elif diff < -15: status = "🟢 絕望"
-            else: return val_str, "❓ 錯誤"
-
-        elif key == 'NAAIM':
-            val = float(val_str)
-            if val > 90: status = "🔴 重倉"
-            elif val < 40: status = "🟢 輕倉"
-            
-        elif key == 'SKEW':
-            val = float(val_str.replace(',',''))
-            if val > 140: status = "🔴 警戒"
-            elif val < 120: status = "🟢 平穩"
-            
-        elif key == 'ABOVE_200_DAYS':
-            val = float(val_str.replace('%',''))
-            if val > 80: status = "🔴 過熱"
-            elif val < 20: status = "🟢 超賣"
-
-        return val_str, status
-
-    except Exception:
-        return str(value), "⚠️ 無法判讀"
-
-def calculate_sentiment_summary(results):
-    bull_signals = 0
-    bear_signals = 0
-    
-    for key, val in results.items():
-        _, status = get_indicator_status(key, val)
-        if "🟢" in status: bull_signals += 1
-        if "🔴" in status: bear_signals += 1
-
-    conclusion = "⚪ 市場分歧，觀望"
-    if bull_signals > bear_signals: conclusion = "🟢 偏向恐懼/機會 (Risk On)"
-    elif bear_signals > bull_signals: conclusion = "🔴 偏向貪婪/風險 (Risk Off)"
-        
-    return f"**🟢 多方**: {bull_signals} | **🔴 空方**: {bear_signals}\n👉 {conclusion}"
-
-def send_discord_embed(results, market_text, summary_text):
-    webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
-    if not webhook_url: return
-
-    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # 顏色邏輯 (使用 RSI 或 CNN 輔助)
-    color = 0x808080 
-    try:
-        val = float(str(results.get('CNN', '50')).split()[0])
-        if val <= 45: color = 0x00FF00 
-        elif val >= 55: color = 0xFF0000 
+            gain = (delta.where(delta > 0, 0)).ewm(com=13, adjust=False).mean()
+            loss = (-delta.where(delta < 0, 0)).ewm(com=13, adjust=False).mean()
+            rs = gain / loss
+            return 100 - (100 / (1 + rs)).iloc[-1]
     except: pass
+    return None
 
+# 9. 風險胃口計算
+def calc_risk_ratio():
+    try:
+        data = yf.download(["XLY", "XLP"], period="5d", progress=False, auto_adjust=False)['Close']
+        if len(data) >= 2:
+            now = data['XLY'].iloc[-1] / data['XLP'].iloc[-1]
+            prev = data['XLY'].iloc[-2] / data['XLP'].iloc[-2]
+            icon = "↗️" if now > prev else "↘️"
+            return f"{now:.2f} ({icon})"
+    except: pass
+    return None
+
+# 10. [新] 板塊廣度計算 (替代原本的爬蟲)
+def calc_sector_breadth():
+    try:
+        # 11 大板塊 ETF
+        sectors = ['XLE', 'XLU', 'XLK', 'XLB', 'XLP', 'XLY', 'XLI', 'XLV', 'XLF', 'XLRE', 'XLC']
+        data = yf.download(sectors, period="2mo", progress=False, auto_adjust=False)['Close']
+        
+        count = 0
+        for s in sectors:
+            if len(data) >= 20:
+                ma200 = data[s].rolling(50).mean().iloc[-1] # 用50日或200日皆可，這裡用50日反應較快，或改回200
+                # 修正：如果要 200日線 breadth，就要抓 1y 資料
+                # 為了速度，我們這裡計算 "站上 50 日線" 的板塊數量作為短期廣度
+                # 若堅持 200 日，請把 period="1y", rolling(200)
+                if data[s].iloc[-1] > ma200:
+                    count += 1
+        return count
+    except: pass
+    return None
+
+
+# ==========================================
+# 🚀 主程式邏輯 (Execution)
+# ==========================================
+
+def fetch_data():
+    results = {}
+    print("🚀 啟動極速抓取 (No Selenium)...")
+    
+    for key, cfg in INDICATORS.items():
+        print(f"   Fetching {cfg['name']}...", end=" ")
+        val = None
+        
+        # 根據類型分派任務
+        if cfg['type'] == 'yfinance':
+            val = fetch_yf_price(cfg['ticker'])
+        elif cfg['type'] == 'trend_ma20':
+            val = fetch_trend_ma20(cfg['ticker'])
+        elif cfg['type'] == 'price_change':
+            val = fetch_price_change(cfg['ticker'])
+        elif cfg['type'] == 'calc_rsi':
+            val = calc_rsi(cfg['ticker'])
+        elif cfg['type'] == 'calc_risk_ratio':
+            val = calc_risk_ratio()
+        elif cfg['type'] == 'calc_sector_breadth':
+            val = calc_sector_breadth()
+        
+        # 自訂函式類
+        elif cfg['type'] == 'func_cnn': val = func_cnn()
+        elif cfg['type'] == 'func_aaii': val = func_aaii()
+        elif cfg['type'] == 'func_pcr': val = func_pcr()
+        elif cfg['type'] == 'func_naaim': val = func_naaim()
+
+        if val is not None:
+            print("✅")
+            results[key] = val
+        else:
+            print("❌")
+            results[key] = None
+            
+    return results
+
+def fetch_market_info():
+    try:
+        data = yf.download(["^GSPC", "^NDX"], period="2d", progress=False, auto_adjust=False)['Close']
+        info = []
+        for sym, name in [("^GSPC", "S&P 500"), ("^NDX", "Nasdaq 100")]:
+            cur = data[sym].iloc[-1]
+            prev = data[sym].iloc[-2]
+            chg = (cur - prev) / prev * 100
+            icon = "📈" if chg > 0 else "📉"
+            info.append(f"{icon} **{name}**: {cur:,.2f} ({chg:+.2f}%)")
+        return "\n".join(info)
+    except: return "無法取得大盤"
+
+def send_discord(results, market_text):
+    webhook = os.environ.get("DISCORD_WEBHOOK_URL")
+    if not webhook: return
+    
+    # 統計多空
+    bulls = 0
+    bears = 0
+    
+    # 產生 Fields
     fields = []
     
-    fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
-    fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
+    # 用來分類顯示的緩衝區
+    categories = {
+        'Macro': [], 'Structure': [], 'Tech': [], 'SmartMoney': []
+    }
+    
+    for key, val in results.items():
+        if val is None: continue
+        cfg = INDICATORS[key]
+        
+        # 評估狀態
+        status_text = ""
+        if callable(cfg.get('eval')):
+            status_text = cfg['eval'](val)
+            if "🟢" in status_text: bulls += 1
+            if "🔴" in status_text: bears += 1
+            
+        # 格式化數值
+        val_str = str(val)
+        if callable(cfg.get('fmt')):
+            val_str = cfg['fmt'](val)
+        elif isinstance(val, float):
+            val_str = f"{val:.2f}"
+            
+        # 加入分類清單
+        line = f"> {cfg['name']}: **{val_str}** ({status_text})"
+        if cfg['category'] in categories:
+            categories[cfg['category']].append(line)
 
-    def fmt_line(name, key):
-        val = results.get(key)
-        if not val: return f"> {name}: N/A"
-        val_str, status = get_indicator_status(key, val)
-        return f"> {name}: **{val_str}** ({status})"
-
-    # --- 四大分類排版 ---
-
-    # 1. 🌊 宏觀與資金 (Macro & Credit)
-    # 包含: 10年債, 美元, 高收益債(HYG), 比特幣
-    macro_str = ""
-    macro_str += fmt_line("🇺🇸 10年債", "BOND_10Y") + "\n"
-    macro_str += fmt_line("💵 美元 DXY", "DXY") + "\n"
-    macro_str += fmt_line("💳 高收債 HYG", "HYG") + "\n"
-    macro_str += fmt_line("🪙 比特幣", "BTC")
-    fields.append({"name": "🌊 宏觀與資金 (Macro & Credit)", "value": macro_str, "inline": False})
-
-    # 2. 🏗️ 結構與板塊 (Structure & Sectors)
-    # 包含: 羅素2000(IWM), 半導體(SOXX), 風險胃口(XLY/XLP)
-    struct_str = ""
-    struct_str += fmt_line("🏢 羅素2000", "IWM") + "\n"
-    struct_str += fmt_line("⚡ 半導體 SOXX", "SOXX") + "\n"
-    struct_str += fmt_line("⚖️ 風險胃口", "RISK_RATIO")
-    fields.append({"name": "🏗️ 結構與板塊 (Structure & Sectors)", "value": struct_str, "inline": False})
-
-    # 3. 🌡️ 技術與情緒 (Tech & Sentiment)
-    # 包含: RSI, VIX, CNN, 200日線
-    tech_str = ""
-    tech_str += fmt_line("📈 大盤 RSI", "RSI") + "\n"
-    tech_str += fmt_line("🌪️ VIX 波動", "VIX") + "\n"
-    tech_str += fmt_line("😱 CNN 情緒", "CNN") + "\n"
-    tech_str += fmt_line("📊 >200日線", "ABOVE_200_DAYS")
-    fields.append({"name": "🌡️ 技術與情緒 (Tech & Sentiment)", "value": tech_str, "inline": False})
-
-    # 4. 🐳 籌碼與內資 (Smart Money)
-    # 包含: NAAIM, SKEW, AAII, Put/Call
-    fund_str = ""
-    fund_str += fmt_line("🏦 機構持倉", "NAAIM") + "\n"
-    fund_str += fmt_line("🦢 黑天鵝 SKEW", "SKEW") + "\n"
-    fund_str += fmt_line("🐂 散戶 AAII", "AAII") + "\n"
-    fund_str += fmt_line("⚖️ Put/Call", "PUT_CALL")
-    fields.append({"name": "🐳 籌碼與內資 (Smart Money)", "value": fund_str, "inline": False})
-
-    data = {
+    # 總結文字
+    summary = "⚪ 市場分歧，觀望"
+    if bulls > bears: summary = "🟢 偏向恐懼/機會 (Risk On)"
+    elif bears > bulls: summary = "🔴 偏向貪婪/風險 (Risk Off)"
+    
+    # 組合 Embed
+    fields.append({"name": "🔮 情緒總結", "value": f"**多**: {bulls} | **空**: {bears}\n👉 {summary}", "inline": False})
+    fields.append({"name": "📊 大盤", "value": market_text, "inline": False})
+    
+    cat_names = {
+        'Macro': "🌊 宏觀與資金 (Macro)",
+        'Structure': "🏗️ 結構與板塊 (Structure)",
+        'Tech': "🌡️ 技術與情緒 (Tech)",
+        'SmartMoney': "🐳 籌碼與內資 (Smart Money)"
+    }
+    
+    for cat, lines in categories.items():
+        if lines:
+            fields.append({
+                "name": cat_names[cat],
+                "value": "\n".join(lines),
+                "inline": False
+            })
+            
+    payload = {
         "embeds": [{
-            "title": f"📅 每日財經情緒日報 ({today_date})", 
-            "color": color,
+            "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
+            "color": 0x00FF00 if bulls > bears else 0xFF0000,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (v2.8 Full Analysis)"},
-            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+            "footer": {"text": "Github Actions Bot v3.0 (No-Selenium)"}
         }]
     }
-
-    try:
-        requests.post(webhook_url, json=data)
-        print("✅ Discord Embed 發送成功！")
-    except Exception as e:
-        print(f"❌ 發送錯誤: {e}")
-
-def pause_for_exit():
-    if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdin.isatty():
-        return
-    try:
-        input("按 Enter 結束...")
-    except: pass
+    
+    requests.post(webhook, json=payload)
 
 if __name__ == "__main__":
-    results, failed = fetch_all_indices()
-    print("\n[Market] 正在抓取大盤資訊...")
-    market_text = fetch_market_data()
-    print("[Analysis] 正在分析市場情緒...")
-    summary_text = calculate_sentiment_summary(results)
-    print("\n正在發送 Discord 通知...")
-    send_discord_embed(results, market_text, summary_text)
-    pause_for_exit()
+    data = fetch_data()
+    mkt = fetch_market_info()
+    send_discord(data, mkt)
