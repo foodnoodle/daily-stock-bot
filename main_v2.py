@@ -1,13 +1,13 @@
-# --- main_v2.py (升級版：圖文卡片 + 大盤行情) ---
+# --- main_v2.py (終極版 v2.1：日期 + 個別情緒解讀 + 真實指數) ---
 import os
 import sys
 import io
 import requests
 import time
-# 新增：引入 yfinance 抓股價
+import datetime
 import yfinance as yf 
 
-# 引入你的其他模組 (這些都是共用的，不用重寫)
+# 引入你的其他模組
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from vix import fetch_vix_index
@@ -25,35 +25,44 @@ RUN_NAAIM = True
 RUN_SKEW = True
 RUN_ABOVE_200_DAYS = True
 
-# 抓取大盤行情的函式
+# 1. 抓取大盤行情的函式 (修改為真實指數)
 def fetch_market_data():
     try:
-        tickers = ["SPY", "QQQ"]
-        # 使用 yfinance 下載最近 2 天的數據
+        # ^GSPC = S&P 500, ^NDX = Nasdaq 100
+        tickers = ["^GSPC", "^NDX"]
         data = yf.download(tickers, period="2d", progress=False)['Close']
         
-        # 計算漲跌幅
+        # 對應的顯示名稱
+        name_map = {"^GSPC": "S&P 500", "^NDX": "Nasdaq 100"}
+        
         market_info = []
         for symbol in tickers:
             try:
-                # 確保有兩天的數據來計算差異
+                # yfinance 有時返回的順序不固定，確保安全讀取
                 if len(data) >= 2:
-                    current = data[symbol].iloc[-1]
-                    prev = data[symbol].iloc[-2]
+                    # 處理多層索引或單層索引的情況
+                    try:
+                        current = data[symbol].iloc[-1]
+                        prev = data[symbol].iloc[-2]
+                    except:
+                        # 如果只有一檔股票或格式不同，嘗試直接讀取
+                        current = data.iloc[-1]
+                        prev = data.iloc[-2]
+
                     change_pct = ((current - prev) / prev) * 100
                     icon = "📈" if change_pct > 0 else "📉"
-                    # 格式化文字
-                    market_info.append(f"{icon} **{symbol}**: {current:.2f} ({change_pct:+.2f}%)")
+                    display_name = name_map.get(symbol, symbol)
+                    market_info.append(f"{icon} **{display_name}**: {current:,.2f} ({change_pct:+.2f}%)")
                 else:
                     market_info.append(f"❓ {symbol}: 數據不足")
-            except Exception:
-                market_info.append(f"❓ {symbol}: 讀取失敗")
+            except Exception as e:
+                market_info.append(f"❓ {symbol}: {e}")
         
         return "\n".join(market_info)
     except Exception as e:
         return f"無法取得大盤數據: {e}"
 
-# 抓取所有指標的函式 (保持原本穩定的排隊執行邏輯)
+# 2. 抓取所有指標 (依序執行)
 def fetch_all_indices():
     results = {}
     failed_keys = []
@@ -81,138 +90,179 @@ def fetch_all_indices():
             
     return results, failed_keys
 
-# --- 升級版：發送 Discord Embed (卡片) ---
-def send_discord_embed(results, market_text):
+# 3. 輔助函式：判斷個別指標的情緒狀態
+def get_indicator_status(key, value):
+    """
+    根據指標數值回傳：(數值字串, 情緒狀態字串)
+    """
+    try:
+        val_str = str(value).strip()
+        status = "⚪ 中性" # 預設
+
+        if key == 'CNN':
+            # CNN 通常格式 "35 (Fear)"，我們取數字
+            val = float(val_str.split()[0])
+            if val <= 25: status = "🟢 極度恐懼 (悲觀)"
+            elif val <= 45: status = "🟢 恐懼 (偏悲觀)"
+            elif val >= 75: status = "🔴 極度貪婪 (樂觀)"
+            elif val >= 55: status = "🔴 貪婪 (偏樂觀)"
+            
+        elif key == 'VIX':
+            val = float(val_str.replace(',',''))
+            if val > 30: status = "🟢 市場恐慌 (悲觀)"
+            elif val < 15: status = "🔴 市場自滿 (樂觀)"
+            
+        elif key == 'PUT_CALL':
+            val = float(val_str)
+            if val > 1.0: status = "🟢 過度看空 (悲觀)"
+            elif val < 0.8: status = "🔴 過度看多 (樂觀)"
+            
+        elif key == 'AAII':
+            # AAII 是個 tuple (bull, bear, diff)
+            if isinstance(value, tuple):
+                bull, bear, diff = value
+                val_str = f"多{bull}% | 空{bear}%"
+                if diff > 15: status = "🔴 散戶極度樂觀"
+                elif diff < -15: status = "🟢 散戶極度悲觀"
+            else:
+                return val_str, "❓ 格式錯誤"
+
+        elif key == 'NAAIM':
+            val = float(val_str)
+            if val > 80: status = "🔴 經理人樂觀 (高持倉)"
+            elif val < 20: status = "🟢 經理人悲觀 (低持倉)"
+            
+        elif key == 'SKEW':
+            val = float(val_str.replace(',',''))
+            if val > 140: status = "🟢 黑天鵝風險高 (避險情緒)"
+            else: status = "🔴 風險情緒平穩" # SKEW 低通常代表市場不擔心崩盤
+            
+        elif key == 'ABOVE_200_DAYS':
+            val = float(val_str.replace('%',''))
+            if val > 80: status = "🔴 市場過熱 (極度樂觀)"
+            elif val < 20: status = "🟢 市場超賣 (極度悲觀)"
+
+        return val_str, status
+
+    except Exception:
+        return str(value), "⚠️ 無法判讀"
+
+# 4. 計算市場情緒總結 (簡易版)
+def calculate_sentiment_summary(results):
+    # 這裡只做簡單的多空計數
+    bull_signals = 0
+    bear_signals = 0
+    
+    # 遍歷結果來統計
+    for key, val in results.items():
+        _, status = get_indicator_status(key, val)
+        if "🟢" in status: bull_signals += 1 # 恐懼/悲觀往往是買點 (偏多訊號)
+        if "🔴" in status: bear_signals += 1 # 貪婪/樂觀往往是賣點 (偏空訊號)
+
+    conclusion = "⚪ 市場情緒分歧，建議觀望"
+    if bull_signals > bear_signals:
+        conclusion = "🟢 市場偏向恐懼 (可能存在反彈機會)"
+    elif bear_signals > bull_signals:
+        conclusion = "🔴 市場偏向貪婪 (追高風險增加)"
+        
+    return f"**多方訊號(恐懼)**: {bull_signals} | **空方訊號(貪婪)**: {bear_signals}\n👉 {conclusion}"
+
+# 5. 發送 Discord Embed (終極卡片)
+def send_discord_embed(results, market_text, summary_text):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
         print("❌ 未設定 Webhook URL")
         return
 
-    # 1. 決定卡片顏色 (簡單邏輯：看 CNN 指數)
-    color = 0x808080 # 預設灰色
-    fear_greed_val = results.get('CNN', '50')
-    try:
-        # 嘗試取出數值部分 (例如 "35 (Fear)" -> 35)
-        val = float(str(fear_greed_val).split()[0])
-        if val <= 25: color = 0x00FF00 # 極度恐懼 -> 綠色 (機會?)
-        elif 25 < val <= 45: color = 0x90EE90 # 恐懼 -> 淺綠
-        elif 45 < val <= 55: color = 0x808080 # 中立 -> 灰色
-        elif 55 < val <= 75: color = 0xFF6347 # 貪婪 -> 淺紅
-        elif val > 75: color = 0xFF0000 # 極度貪婪 -> 紅色 (危險?)
-    except:
-        pass
+    # 取得今天的日期字串
+    today_date = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    # 2. 建立 Fields (欄位)
+    # 決定卡片顏色 (依據 CNN)
+    color = 0x808080 
+    try:
+        val = float(str(results.get('CNN', '50')).split()[0])
+        if val <= 45: color = 0x00FF00 # 綠色 (恐懼/機會)
+        elif val >= 55: color = 0xFF0000 # 紅色 (貪婪/風險)
+    except: pass
+
     fields = []
     
-    # 加入大盤行情
+    # [區塊 1] 總結摘要
     fields.append({
-        "name": "📊 美股大盤今日走勢",
+        "name": "🔮 市場情緒總結",
+        "value": summary_text,
+        "inline": False
+    })
+
+    # [區塊 2] 大盤行情
+    fields.append({
+        "name": "📊 美股大盤指數",
         "value": market_text if market_text else "無法讀取",
         "inline": False
     })
 
-    # 整理各個指標
-    # CNN
-    fields.append({
-        "name": "😱 CNN 恐懼貪婪",
-        "value": str(results.get('CNN', 'N/A')),
-        "inline": True
-    })
-    
-    # VIX
-    fields.append({
-        "name": "🌪️ VIX 波動率",
-        "value": str(results.get('VIX', 'N/A')),
-        "inline": True
-    })
-    
-    # Put/Call
-    fields.append({
-        "name": "⚖️ Put/Call Ratio",
-        "value": str(results.get('PUT_CALL', 'N/A')),
-        "inline": True
-    })
+    # [區塊 3] 各項指標詳細解讀
+    # 定義顯示順序
+    order = ['CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
+    names = {
+        'CNN': '😱 CNN 恐懼貪婪',
+        'VIX': '🌪️ VIX 波動率',
+        'PUT_CALL': '⚖️ Put/Call Ratio',
+        'AAII': '🐂 AAII 散戶情緒',
+        'NAAIM': '🏦 NAAIM 經理人',
+        'SKEW': '🦢 SKEW 黑天鵝',
+        'ABOVE_200_DAYS': '📈 >200日線比例'
+    }
 
-    # AAII (如果抓取成功，它是個 tuple)
-    aaii = results.get('AAII')
-    if isinstance(aaii, tuple):
-        bull, bear, diff = aaii
-        aaii_str = f"多: {bull}% | 空: {bear}% (差: {diff:.1f})"
-    else:
-        aaii_str = str(aaii)
-    
-    fields.append({
-        "name": "🐂 AAII 散戶情緒",
-        "value": aaii_str,
-        "inline": False
-    })
+    for key in order:
+        val = results.get(key)
+        if val:
+            val_str, status = get_indicator_status(key, val)
+            # 組合數值與狀態，例如: "35\n🟢 極度恐懼"
+            fields.append({
+                "name": names[key],
+                "value": f"{val_str}\n{status}",
+                "inline": True
+            })
 
-    # 其他指標...
-    fields.append({
-        "name": "🏦 NAAIM 經理人持倉",
-        "value": str(results.get('NAAIM', 'N/A')),
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "🦢 SKEW 黑天鵝",
-        "value": str(results.get('SKEW', 'N/A')),
-        "inline": True
-    })
-    
-    fields.append({
-        "name": "📈 >200日線比例",
-        "value": str(results.get('ABOVE_200_DAYS', 'N/A')),
-        "inline": True
-    })
-
-    # 3. 組裝 JSONPayload
     data = {
         "embeds": [{
-            "title": "📅 每日財經情緒日報",
-            "description": "市場情緒指標與大盤概況彙整",
+            "title": f"📅 每日財經情緒日報 ({today_date})", # 標題加入日期
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot • Generated by Python"},
+            "footer": {"text": "Github Actions Auto Bot"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
 
     try:
-        response = requests.post(webhook_url, json=data)
-        if response.status_code in [200, 204]:
-            print("✅ Discord Embed 發送成功！")
-        else:
-            print(f"❌ 發送失敗: {response.status_code}, {response.text}")
+        requests.post(webhook_url, json=data)
+        print("✅ Discord Embed 發送成功！")
     except Exception as e:
         print(f"❌ 發送錯誤: {e}")
 
-# --- 智慧暫停 (防呆機制) ---
+# 防呆暫停
 def pause_for_exit():
-    # 檢查是否在 GitHub Actions 環境 (GITHUB_ACTIONS=true) 或 非互動模式
     if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdin.isatty():
-        print("(雲端執行模式：跳過暫停，直接結束程式)")
         return
     try:
-        input("\n所有數據已顯示完畢，請按 Enter 鍵關閉視窗...")
-    except EOFError:
-        pass
+        input("按 Enter 結束...")
+    except: pass
 
 if __name__ == "__main__":
-    # 使用 StringIO 攔截 print (這樣 Log 才會乾淨，也可以選擇不攔截直接印)
-    # 為了簡單，我們這裡直接讓它印出 Log，因為結果是用 Embed 發送的，不需要攔截文字
-    
     # 1. 抓指標
     results, failed = fetch_all_indices()
     
     # 2. 抓大盤
     print("\n[Market] 正在抓取大盤資訊...")
     market_text = fetch_market_data()
-    print(market_text)
     
-    # 3. 發送漂亮的 Embed
+    # 3. 計算總結
+    print("[Analysis] 正在分析市場情緒...")
+    summary_text = calculate_sentiment_summary(results)
+    
+    # 4. 發送
     print("\n正在發送 Discord 通知...")
-    send_discord_embed(results, market_text)
+    send_discord_embed(results, market_text, summary_text)
     
     pause_for_exit()
