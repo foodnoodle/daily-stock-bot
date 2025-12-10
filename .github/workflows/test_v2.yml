@@ -1,11 +1,11 @@
-name: Test V2 Script (Visual Upgrade)
+name: Manual Dev Test (手動開發測試)
 
 on:
-  # 只有手動觸發，不會自動定時跑
+  # 只有手動觸發
   workflow_dispatch:
 
 jobs:
-  test-v2:
+  test-dev:
     runs-on: ubuntu-latest
 
     steps:
@@ -21,8 +21,9 @@ jobs:
         run: |
           pip install -r requirements.txt
 
-      - name: Run Main V2
+      - name: Run Dev Script
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          python main_v2.py
+          # 這裡改成新的檔名
+          python dev_main.py
