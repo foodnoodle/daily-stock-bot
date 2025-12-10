@@ -1,4 +1,4 @@
-# --- dev_main.py (v2.9: 數據記錄版 - 自動存檔 CSV) ---
+# --- dev_main.py (v2.9.1: 修復 Risk Ratio 與 AAII CSV 寫入問題) ---
 import os
 import sys
 import requests
@@ -9,7 +9,7 @@ import re
 import yfinance as yf 
 import pandas as pd
 
-# 引入原本的爬蟲模組 (維持 Selenium 穩定性)
+# 引入原本的爬蟲模組
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from put_call_ratio import fetch_total_put_call_ratio
@@ -77,10 +77,16 @@ def fetch_risk_on_off_ratio():
         if len(data) >= 2:
             xly = data['XLY']
             xlp = data['XLP']
+            
+            # [修復] 確保計算當前與前一日的比率
             ratio_now = xly.iloc[-1] / xlp.iloc[-1]
             
             xly_prev = data['XLY'].iloc[-2]
             xlp_prev = data['XLP'].iloc[-2]
+            
+            # [修正 BUG] 之前漏了這一行，導致 NameError
+            ratio_prev = xly_prev / xlp_prev
+            
             change = ratio_now - ratio_prev
             icon = "↗️" if change > 0 else "↘️"
             return f"{ratio_now:.2f} ({icon})"
@@ -139,23 +145,15 @@ def fetch_soxx_trend(): return fetch_trend_vs_ma20("SOXX")
 # --- [核心功能: 數據保存] ---
 
 def extract_numeric_value(text):
-    """
-    從字串中提取純數字，用於 CSV 記錄
-    例如: "4.20% (Neutral)" -> 4.20
-          "+3.5%" -> 3.5
-          "123.45 (Above)" -> 123.45
-    """
+    """從字串中提取純數字"""
     if not isinstance(text, str): return ""
-    # 移除 % 和 + 號，方便正則抓取
     clean_text = text.replace('%', '').replace('+', '').replace(',', '')
-    # 抓取第一個浮點數
     match = re.search(r"[-+]?\d*\.\d+|\d+", clean_text)
     if match:
         return match.group()
     return ""
 
 def get_sp500_price_raw():
-    """為了記錄 CSV，單獨抓取乾淨的 SPX 收盤價"""
     try:
         t = yf.Ticker("^GSPC")
         d = t.history(period="1d")
@@ -167,17 +165,25 @@ def get_sp500_price_raw():
 def save_history_csv(results):
     """將今日數據寫入 data/history.csv"""
     try:
-        # 1. 確保資料夾存在
         folder = "data"
         if not os.path.exists(folder):
             os.makedirs(folder)
-            print(f"📂 建立資料夾: {folder}")
 
         file_path = os.path.join(folder, "history.csv")
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         
-        # 2. 準備要寫入的資料列 (Row)
-        # 為了對照方便，我們先定義好欄位順序
+        # [修正 BUG] 處理 AAII 的 Tuple 格式
+        # AAII 回傳的是 (Bull, Bear, Diff)
+        aaii_val = results.get('AAII')
+        aaii_diff_str = ""
+        
+        if isinstance(aaii_val, tuple) and len(aaii_val) >= 3:
+            # 如果是 Tuple，直接取第三個值 (差值)
+            aaii_diff_str = str(aaii_val[2])
+        elif isinstance(aaii_val, str):
+            # 如果是字串 (可能是錯誤訊息)，嘗試提取
+            aaii_diff_str = extract_numeric_value(aaii_val)
+
         fieldnames = [
             'Date', 'SPX_Price', 
             'RSI', 'VIX', 'CNN', 'Put_Call', 
@@ -186,7 +192,6 @@ def save_history_csv(results):
             'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
         ]
         
-        # 3. 解析數據
         row_data = {
             'Date': today_str,
             'SPX_Price': get_sp500_price_raw(),
@@ -203,19 +208,14 @@ def save_history_csv(results):
             'SOXX_Price': extract_numeric_value(results.get('SOXX', '')),
             'NAAIM': extract_numeric_value(results.get('NAAIM', '')),
             'SKEW': extract_numeric_value(results.get('SKEW', '')),
-            'AAII_Diff': extract_numeric_value(results.get('AAII', '')), # 這裡要注意 AAII 格式，可能需要另外處理
+            'AAII_Diff': aaii_diff_str, # 使用修正後的變數
             'Above_200MA': extract_numeric_value(results.get('ABOVE_200_DAYS', ''))
         }
 
-        # 特殊處理: AAII 因為是 Tuple 轉字串 "多xx% | 空xx%"，我們只抓第一個數字 (Bull-Bear Diff 比較難直接抓，這裡簡化抓第一個)
-        # 如果想存 Diff，要改上面的 fetcher 邏輯，目前先存 raw value 看看
-        
-        # 4. 寫入檔案 (Append 模式)
         file_exists = os.path.isfile(file_path)
         
         with open(file_path, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            # 如果是新檔案，先寫標題
             if not file_exists:
                 writer.writeheader()
             writer.writerow(row_data)
@@ -460,7 +460,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (v2.9 Logging Enabled)"},
+            "footer": {"text": "Github Actions Auto Bot (v2.9.1 Bug Fix)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
@@ -493,7 +493,7 @@ if __name__ == "__main__":
     print("\n正在發送 Discord 通知...")
     send_discord_embed(results, market_text, summary_text)
     
-    # 4. [新增] 儲存數據到 CSV
+    # 4. 儲存數據到 CSV
     print("\n正在儲存歷史數據...")
     save_history_csv(results)
     
