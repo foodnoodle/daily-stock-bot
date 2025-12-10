@@ -30,3 +30,21 @@ jobs:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
           python main.py
+          
+      - name: Commit and Push Data (提交並保存數據)
+        run: |
+          # 1. 設定機器人身分 (這會顯示在 Commit 紀錄中)
+          git config --global user.name "GitHub Actions Bot"
+          git config --global user.email "actions@github.com"
+          
+          # 2. 拉取最新的遠端程式碼 (避免多人同時寫入產生衝突)
+          git pull
+          
+          # 3. 將新產生的 csv 加入版控
+          git add data/history.csv
+          
+          # 4. 提交變更 (如果沒有變更，例如假日沒開盤，則略過不報錯)
+          git commit -m "📈 Auto-update daily stock history" || exit 0
+          
+          # 5. 推送回儲存庫
+          git push
