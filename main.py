@@ -1,13 +1,15 @@
-# --- dev_main.py (v2.8: 全方位分析版 - 新增 IWM, HYG, SOXX) ---
+# --- dev_main.py (v2.9: 數據記錄版 - 自動存檔 CSV) ---
 import os
 import sys
 import requests
 import time
 import datetime
+import csv
+import re
 import yfinance as yf 
 import pandas as pd
 
-# 引入你的其他模組
+# 引入原本的爬蟲模組 (維持 Selenium 穩定性)
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from put_call_ratio import fetch_total_put_call_ratio
@@ -29,13 +31,12 @@ RUN_DXY = True
 RUN_RISK_RATIO = True   
 RUN_BTC = True          
 RUN_RSI = True
-# [新增]
 RUN_IWM = True
 RUN_HYG = True
 RUN_SOXX = True
 
 
-# --- [API 抓取與計算區] ---
+# --- [API 抓取區] ---
 
 def fetch_vix_index():
     try:
@@ -76,10 +77,10 @@ def fetch_risk_on_off_ratio():
         if len(data) >= 2:
             xly = data['XLY']
             xlp = data['XLP']
-            
             ratio_now = xly.iloc[-1] / xlp.iloc[-1]
-            ratio_prev = xly.iloc[-2] / xlp.iloc[-2]
             
+            xly_prev = data['XLY'].iloc[-2]
+            xlp_prev = data['XLP'].iloc[-2]
             change = ratio_now - ratio_prev
             icon = "↗️" if change > 0 else "↘️"
             return f"{ratio_now:.2f} ({icon})"
@@ -117,27 +118,112 @@ def fetch_rsi_index():
     except Exception as e:
         return f"錯誤: {e}"
 
-# [新增] 通用趨勢抓取函式 (比較月線 20MA)
 def fetch_trend_vs_ma20(symbol):
     try:
         ticker = yf.Ticker(symbol)
-        # 抓 2 個月確保有足夠資料算 20MA
         data = ticker.history(period="2mo")
         if len(data) >= 20:
             ma20 = data['Close'].rolling(window=20).mean().iloc[-1]
             current = data['Close'].iloc[-1]
-            
-            # 判斷是在均線之上還是之下
             status = "Above" if current > ma20 else "Below"
             return f"{current:.2f} ({status})"
         return "數據不足"
     except Exception as e:
         return f"錯誤: {e}"
 
-# 包裝成個別函式方便調用
 def fetch_iwm_trend(): return fetch_trend_vs_ma20("IWM")
 def fetch_hyg_trend(): return fetch_trend_vs_ma20("HYG")
 def fetch_soxx_trend(): return fetch_trend_vs_ma20("SOXX")
+
+
+# --- [核心功能: 數據保存] ---
+
+def extract_numeric_value(text):
+    """
+    從字串中提取純數字，用於 CSV 記錄
+    例如: "4.20% (Neutral)" -> 4.20
+          "+3.5%" -> 3.5
+          "123.45 (Above)" -> 123.45
+    """
+    if not isinstance(text, str): return ""
+    # 移除 % 和 + 號，方便正則抓取
+    clean_text = text.replace('%', '').replace('+', '').replace(',', '')
+    # 抓取第一個浮點數
+    match = re.search(r"[-+]?\d*\.\d+|\d+", clean_text)
+    if match:
+        return match.group()
+    return ""
+
+def get_sp500_price_raw():
+    """為了記錄 CSV，單獨抓取乾淨的 SPX 收盤價"""
+    try:
+        t = yf.Ticker("^GSPC")
+        d = t.history(period="1d")
+        if not d.empty:
+            return f"{d['Close'].iloc[-1]:.2f}"
+    except: pass
+    return ""
+
+def save_history_csv(results):
+    """將今日數據寫入 data/history.csv"""
+    try:
+        # 1. 確保資料夾存在
+        folder = "data"
+        if not os.path.exists(folder):
+            os.makedirs(folder)
+            print(f"📂 建立資料夾: {folder}")
+
+        file_path = os.path.join(folder, "history.csv")
+        today_str = datetime.datetime.now().strftime("%Y-%m-%d")
+        
+        # 2. 準備要寫入的資料列 (Row)
+        # 為了對照方便，我們先定義好欄位順序
+        fieldnames = [
+            'Date', 'SPX_Price', 
+            'RSI', 'VIX', 'CNN', 'Put_Call', 
+            '10Y_Yield', 'DXY', 'BTC_Chg', 'HYG_Price', 'Risk_Ratio',
+            'IWM_Price', 'SOXX_Price', 
+            'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
+        ]
+        
+        # 3. 解析數據
+        row_data = {
+            'Date': today_str,
+            'SPX_Price': get_sp500_price_raw(),
+            'RSI': extract_numeric_value(results.get('RSI', '')),
+            'VIX': extract_numeric_value(results.get('VIX', '')),
+            'CNN': extract_numeric_value(results.get('CNN', '')),
+            'Put_Call': extract_numeric_value(results.get('PUT_CALL', '')),
+            '10Y_Yield': extract_numeric_value(results.get('BOND_10Y', '')),
+            'DXY': extract_numeric_value(results.get('DXY', '')),
+            'BTC_Chg': extract_numeric_value(results.get('BTC', '')),
+            'HYG_Price': extract_numeric_value(results.get('HYG', '')),
+            'Risk_Ratio': extract_numeric_value(results.get('RISK_RATIO', '')),
+            'IWM_Price': extract_numeric_value(results.get('IWM', '')),
+            'SOXX_Price': extract_numeric_value(results.get('SOXX', '')),
+            'NAAIM': extract_numeric_value(results.get('NAAIM', '')),
+            'SKEW': extract_numeric_value(results.get('SKEW', '')),
+            'AAII_Diff': extract_numeric_value(results.get('AAII', '')), # 這裡要注意 AAII 格式，可能需要另外處理
+            'Above_200MA': extract_numeric_value(results.get('ABOVE_200_DAYS', ''))
+        }
+
+        # 特殊處理: AAII 因為是 Tuple 轉字串 "多xx% | 空xx%"，我們只抓第一個數字 (Bull-Bear Diff 比較難直接抓，這裡簡化抓第一個)
+        # 如果想存 Diff，要改上面的 fetcher 邏輯，目前先存 raw value 看看
+        
+        # 4. 寫入檔案 (Append 模式)
+        file_exists = os.path.isfile(file_path)
+        
+        with open(file_path, mode='a', newline='', encoding='utf-8') as f:
+            writer = csv.DictWriter(f, fieldnames=fieldnames)
+            # 如果是新檔案，先寫標題
+            if not file_exists:
+                writer.writeheader()
+            writer.writerow(row_data)
+            
+        print(f"💾 數據已儲存至: {file_path}")
+
+    except Exception as e:
+        print(f"❌ 儲存 CSV 失敗: {e}")
 
 
 # --- [主程式區] ---
@@ -182,9 +268,7 @@ def fetch_all_indices():
                 else: print(f"[{name}] 重試中 ({i+1})...")
                 
                 result = fetch_func()
-                
-                is_error = False
-                error_msg = ""
+                is_error = False; error_msg = ""
                 if isinstance(result, str) and "錯誤" in result:
                     is_error = True; error_msg = result
                 elif isinstance(result, tuple) and result[0] is None:
@@ -205,7 +289,6 @@ def fetch_all_indices():
     if RUN_BTC: results['BTC'] = run_fetcher('BTC', fetch_bitcoin_trend)
     if RUN_RSI: results['RSI'] = run_fetcher('RSI', fetch_rsi_index)
     
-    # [新增]
     if RUN_IWM: results['IWM'] = run_fetcher('IWM', fetch_iwm_trend)
     if RUN_HYG: results['HYG'] = run_fetcher('HYG', fetch_hyg_trend)
     if RUN_SOXX: results['SOXX'] = run_fetcher('SOXX', fetch_soxx_trend)
@@ -272,15 +355,13 @@ def get_indicator_status(key, value):
             elif val > 60: status = "⚪ 強勢"
             elif val < 40: status = "⚪ 弱勢"
 
-        # [新增] 趨勢型指標 (Above/Below MA20)
         elif key in ['IWM', 'SOXX', 'HYG']:
-            # 格式: "123.45 (Above)"
             if "(Above)" in val_str:
-                if key == 'HYG': status = "🟢 資金流入 (Risk On)"
+                if key == 'HYG': status = "🟢 資金流入"
                 elif key == 'IWM': status = "🟢 廣度健康"
                 elif key == 'SOXX': status = "🟢 領頭羊強"
             elif "(Below)" in val_str:
-                if key == 'HYG': status = "🔴 資金流出 (Risk Off)"
+                if key == 'HYG': status = "🔴 資金流出"
                 elif key == 'IWM': status = "🔴 廣度轉弱"
                 elif key == 'SOXX': status = "🔴 領頭羊弱"
 
@@ -315,7 +396,6 @@ def get_indicator_status(key, value):
 def calculate_sentiment_summary(results):
     bull_signals = 0
     bear_signals = 0
-    
     for key, val in results.items():
         _, status = get_indicator_status(key, val)
         if "🟢" in status: bull_signals += 1
@@ -324,7 +404,6 @@ def calculate_sentiment_summary(results):
     conclusion = "⚪ 市場分歧，觀望"
     if bull_signals > bear_signals: conclusion = "🟢 偏向恐懼/機會 (Risk On)"
     elif bear_signals > bull_signals: conclusion = "🔴 偏向貪婪/風險 (Risk Off)"
-        
     return f"**🟢 多方**: {bull_signals} | **🔴 空方**: {bear_signals}\n👉 {conclusion}"
 
 def send_discord_embed(results, market_text, summary_text):
@@ -332,8 +411,6 @@ def send_discord_embed(results, market_text, summary_text):
     if not webhook_url: return
 
     today_date = datetime.datetime.now().strftime("%Y-%m-%d")
-    
-    # 顏色邏輯 (使用 RSI 或 CNN 輔助)
     color = 0x808080 
     try:
         val = float(str(results.get('CNN', '50')).split()[0])
@@ -342,7 +419,6 @@ def send_discord_embed(results, market_text, summary_text):
     except: pass
 
     fields = []
-    
     fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
 
@@ -352,10 +428,6 @@ def send_discord_embed(results, market_text, summary_text):
         val_str, status = get_indicator_status(key, val)
         return f"> {name}: **{val_str}** ({status})"
 
-    # --- 四大分類排版 ---
-
-    # 1. 🌊 宏觀與資金 (Macro & Credit)
-    # 包含: 10年債, 美元, 高收益債(HYG), 比特幣
     macro_str = ""
     macro_str += fmt_line("🇺🇸 10年債", "BOND_10Y") + "\n"
     macro_str += fmt_line("💵 美元 DXY", "DXY") + "\n"
@@ -363,16 +435,12 @@ def send_discord_embed(results, market_text, summary_text):
     macro_str += fmt_line("🪙 比特幣", "BTC")
     fields.append({"name": "🌊 宏觀與資金 (Macro & Credit)", "value": macro_str, "inline": False})
 
-    # 2. 🏗️ 結構與板塊 (Structure & Sectors)
-    # 包含: 羅素2000(IWM), 半導體(SOXX), 風險胃口(XLY/XLP)
     struct_str = ""
     struct_str += fmt_line("🏢 羅素2000", "IWM") + "\n"
     struct_str += fmt_line("⚡ 半導體 SOXX", "SOXX") + "\n"
     struct_str += fmt_line("⚖️ 風險胃口", "RISK_RATIO")
     fields.append({"name": "🏗️ 結構與板塊 (Structure & Sectors)", "value": struct_str, "inline": False})
 
-    # 3. 🌡️ 技術與情緒 (Tech & Sentiment)
-    # 包含: RSI, VIX, CNN, 200日線
     tech_str = ""
     tech_str += fmt_line("📈 大盤 RSI", "RSI") + "\n"
     tech_str += fmt_line("🌪️ VIX 波動", "VIX") + "\n"
@@ -380,8 +448,6 @@ def send_discord_embed(results, market_text, summary_text):
     tech_str += fmt_line("📊 >200日線", "ABOVE_200_DAYS")
     fields.append({"name": "🌡️ 技術與情緒 (Tech & Sentiment)", "value": tech_str, "inline": False})
 
-    # 4. 🐳 籌碼與內資 (Smart Money)
-    # 包含: NAAIM, SKEW, AAII, Put/Call
     fund_str = ""
     fund_str += fmt_line("🏦 機構持倉", "NAAIM") + "\n"
     fund_str += fmt_line("🦢 黑天鵝 SKEW", "SKEW") + "\n"
@@ -394,7 +460,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (v2.8 Full Analysis)"},
+            "footer": {"text": "Github Actions Auto Bot (v2.9 Logging Enabled)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
@@ -414,10 +480,21 @@ def pause_for_exit():
 
 if __name__ == "__main__":
     results, failed = fetch_all_indices()
+    
+    # 1. 抓取大盤文字 (顯示用)
     print("\n[Market] 正在抓取大盤資訊...")
     market_text = fetch_market_data()
+    
+    # 2. 計算總結
     print("[Analysis] 正在分析市場情緒...")
     summary_text = calculate_sentiment_summary(results)
+    
+    # 3. 發送通知
     print("\n正在發送 Discord 通知...")
     send_discord_embed(results, market_text, summary_text)
+    
+    # 4. [新增] 儲存數據到 CSV
+    print("\n正在儲存歷史數據...")
+    save_history_csv(results)
+    
     pause_for_exit()
