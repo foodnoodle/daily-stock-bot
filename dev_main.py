@@ -1,4 +1,4 @@
-# --- main_v2.py (v2.3: 修正 SKEW 邏輯 + 新增失敗重試機制) ---
+# --- dev_main.py (v2.4: API 化 + 新增 10 年期公債) ---
 import os
 import sys
 import requests
@@ -23,6 +23,24 @@ RUN_PUT_CALL = True
 RUN_NAAIM = True
 RUN_SKEW = True
 RUN_ABOVE_200_DAYS = True
+RUN_BOND_YIELD = True # [新增] 公債殖利率開關
+
+# [新增] 抓取 10 年期公債殖利率 (直接定義在這裡，方便維護)
+def fetch_10y_treasury_yield():
+    try:
+        # ^TNX 是 Yahoo Finance 的 10 年期公債收益率代號
+        ticker = yf.Ticker("^TNX")
+        data = ticker.history(period="1d")
+        if not data.empty:
+            val = data['Close'].iloc[-1]
+            # Yahoo 的 TNX 有時是 42.5 (代表 4.25%)，有時是 4.25
+            # 為了保險，如果數值大於 20，我們就除以 10
+            if val > 20:
+                val = val / 10
+            return f"{val:.2f}%"
+        return "抓取失敗"
+    except Exception as e:
+        return f"錯誤: {e}"
 
 # 1. 抓取大盤行情 (指數版)
 def fetch_market_data():
@@ -62,7 +80,7 @@ def fetch_all_indices():
     print("🚀 開始依序抓取數據...")
 
     def run_fetcher(name, fetch_func):
-        max_retries = 3
+        max_retries = 3 # 設定重試次數
         
         for i in range(max_retries):
             attempt = i + 1
@@ -78,39 +96,32 @@ def fetch_all_indices():
                 is_error = False
                 error_msg = ""
                 
-                # 狀況 1: 回傳結果是錯誤字串 (適用大部分指標)
                 if isinstance(result, str) and "錯誤" in result:
                     is_error = True
                     error_msg = result
-                
-                # 狀況 2: 回傳結果是 Tuple 且包含 None (適用 AAII)
-                # AAII 失敗時通常回傳 (None, None, "錯誤訊息")
                 elif isinstance(result, tuple) and result[0] is None:
                     is_error = True
-                    error_msg = result[2] if len(result) > 2 else "抓取失敗 (Unknown)"
+                    error_msg = result[2] if len(result) > 2 else "抓取失敗"
 
                 # --- 處理結果 ---
                 if not is_error:
-                    return result # 成功！直接回傳
+                    return result # 成功
                 
-                # 若是失敗：
                 if attempt == max_retries:
-                    # 已經是最後一次嘗試，回傳錯誤訊息
                     print(f"   ❌ [{name}] 最終失敗: {error_msg}")
                     return error_msg
                 else:
-                    # 還有機會，等待後重試
-                    time.sleep(5)
+                    time.sleep(2) # 休息一下再試
 
             except Exception as e:
-                # 處理未被捕捉的程式例外
                 if attempt == max_retries:
                     return f"錯誤: {e}"
                 print(f"   ⚠️ 發生例外: {e}")
-                time.sleep(5)
+                time.sleep(2)
                 
         return "錯誤: 未知原因失敗"
 
+    if RUN_BOND_YIELD: results['BOND_10Y'] = run_fetcher('BOND_10Y', fetch_10y_treasury_yield)
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
     if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
     if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
@@ -124,7 +135,7 @@ def fetch_all_indices():
             failed_keys.append(key)
     return results, failed_keys
 
-# 3. 判斷個別指標情緒狀態
+# 3. 判斷個別指標情緒狀態 (更新公債邏輯)
 def get_indicator_status(key, value):
     try:
         val_str = str(value).strip()
@@ -139,15 +150,20 @@ def get_indicator_status(key, value):
             
         elif key == 'VIX':
             val = float(val_str.replace(',',''))
-            # VIX 高代表恐慌，通常視為底部機會(偏多)
             if val > 30: status = "🟢 市場恐慌 (偏多)"
             elif val < 15: status = "🔴 市場自滿 (偏空)"
             
         elif key == 'PUT_CALL':
             val = float(val_str)
-            # PC Ratio 高代表大家在買保險，過度悲觀往往是反彈契機
             if val > 1.0: status = "🟢 過度看空 (偏多)"
             elif val < 0.8: status = "🔴 過度看多 (偏空)"
+
+        elif key == 'BOND_10Y':
+            # 10年期公債殖利率：越高對科技股/股市壓力越大
+            val = float(val_str.replace('%',''))
+            if val > 4.5: status = "🔴 利率過高 (股市承壓)"
+            elif val < 3.5: status = "🟢 利率舒適 (資金寬鬆)"
+            else: status = "⚪ 利率中性"
             
         elif key == 'AAII':
             if isinstance(value, tuple):
@@ -164,8 +180,6 @@ def get_indicator_status(key, value):
             elif val < 40: status = "🟢 經理人輕倉 (偏多)"
             
         elif key == 'SKEW':
-            # --- [修正重點] ---
-            # SKEW 飆高代表機構在大買黑天鵝保險，暗示隨時可能崩盤 -> 視為風險警示 (偏空)
             val = float(val_str.replace(',',''))
             if val > 140: status = "🔴 黑天鵝警戒 (偏空)"
             elif val < 120: status = "🟢 風險情緒平穩 (偏多)"
@@ -181,7 +195,7 @@ def get_indicator_status(key, value):
     except Exception:
         return str(value), "⚠️ 無法判讀"
 
-# 4. 計算總結 (修正 SKEW 納入空方計數)
+# 4. 計算總結
 def calculate_sentiment_summary(results):
     bull_signals = 0
     bear_signals = 0
@@ -192,10 +206,8 @@ def calculate_sentiment_summary(results):
         if "🔴" in status: bear_signals += 1
 
     conclusion = "⚪ 市場情緒分歧，建議觀望"
-    # 當「恐懼/偏多」訊號較多時 -> 機會
     if bull_signals > bear_signals:
         conclusion = "🟢 市場偏向恐懼 (可能存在機會)"
-    # 當「貪婪/偏空」訊號較多時 -> 風險
     elif bear_signals > bull_signals:
         conclusion = "🔴 市場偏向貪婪/風險高 (建議謹慎)"
         
@@ -210,7 +222,7 @@ def send_discord_embed(results, market_text, summary_text):
 
     today_date = datetime.datetime.now().strftime("%Y-%m-%d")
     
-    # 卡片顏色依據 CNN
+    # 這裡可以加入 Bond Yield 來輔助判斷顏色，目前仍維持 CNN
     color = 0x808080 
     try:
         val = float(str(results.get('CNN', '50')).split()[0])
@@ -223,8 +235,10 @@ def send_discord_embed(results, market_text, summary_text):
     fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
 
-    order = ['CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
+    # [調整] 顯示順序，把公債放在前面重要位置
+    order = ['BOND_10Y', 'CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
     names = {
+        'BOND_10Y': '🇺🇸 10年期公債殖利率',
         'CNN': '😱 CNN 恐懼貪婪',
         'VIX': '🌪️ VIX 波動率',
         'PUT_CALL': '⚖️ Put/Call Ratio',
@@ -239,7 +253,7 @@ def send_discord_embed(results, market_text, summary_text):
         if val:
             val_str, status = get_indicator_status(key, val)
             fields.append({
-                "name": names[key],
+                "name": names.get(key, key),
                 "value": f"{val_str}\n{status}",
                 "inline": True
             })
@@ -249,7 +263,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot"},
+            "footer": {"text": "Github Actions Auto Bot (API v2.4)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
