@@ -1,4 +1,4 @@
-# --- dev_main.py (v2.7: 排版大整形 + 修復 Warning) ---
+# --- dev_main.py (v2.8: 全方位分析版 - 新增 IWM, HYG, SOXX) ---
 import os
 import sys
 import requests
@@ -28,7 +28,11 @@ RUN_BOND_YIELD = True
 RUN_DXY = True          
 RUN_RISK_RATIO = True   
 RUN_BTC = True          
-RUN_RSI = True          
+RUN_RSI = True
+# [新增]
+RUN_IWM = True
+RUN_HYG = True
+RUN_SOXX = True
 
 
 # --- [API 抓取與計算區] ---
@@ -68,16 +72,13 @@ def fetch_dxy_index():
 def fetch_risk_on_off_ratio():
     try:
         tickers = ["XLY", "XLP"]
-        # [修復 Warning] 加入 auto_adjust=False
         data = yf.download(tickers, period="5d", progress=False, auto_adjust=False)['Close']
         if len(data) >= 2:
-            xly_now = data['XLY'].iloc[-1]
-            xlp_now = data['XLP'].iloc[-1]
-            ratio_now = xly_now / xlp_now
+            xly = data['XLY']
+            xlp = data['XLP']
             
-            xly_prev = data['XLY'].iloc[-2]
-            xlp_prev = data['XLP'].iloc[-2]
-            ratio_prev = xly_prev / xlp_prev
+            ratio_now = xly.iloc[-1] / xlp.iloc[-1]
+            ratio_prev = xly.iloc[-2] / xlp.iloc[-2]
             
             change = ratio_now - ratio_prev
             icon = "↗️" if change > 0 else "↘️"
@@ -116,13 +117,34 @@ def fetch_rsi_index():
     except Exception as e:
         return f"錯誤: {e}"
 
+# [新增] 通用趨勢抓取函式 (比較月線 20MA)
+def fetch_trend_vs_ma20(symbol):
+    try:
+        ticker = yf.Ticker(symbol)
+        # 抓 2 個月確保有足夠資料算 20MA
+        data = ticker.history(period="2mo")
+        if len(data) >= 20:
+            ma20 = data['Close'].rolling(window=20).mean().iloc[-1]
+            current = data['Close'].iloc[-1]
+            
+            # 判斷是在均線之上還是之下
+            status = "Above" if current > ma20 else "Below"
+            return f"{current:.2f} ({status})"
+        return "數據不足"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+# 包裝成個別函式方便調用
+def fetch_iwm_trend(): return fetch_trend_vs_ma20("IWM")
+def fetch_hyg_trend(): return fetch_trend_vs_ma20("HYG")
+def fetch_soxx_trend(): return fetch_trend_vs_ma20("SOXX")
+
 
 # --- [主程式區] ---
 
 def fetch_market_data():
     try:
         tickers = ["^GSPC", "^NDX"]
-        # [修復 Warning] 加入 auto_adjust=False
         data = yf.download(tickers, period="2d", progress=False, auto_adjust=False)['Close']
         name_map = {"^GSPC": "S&P 500", "^NDX": "Nasdaq 100"}
         market_info = []
@@ -156,7 +178,6 @@ def fetch_all_indices():
         max_retries = 3
         for i in range(max_retries):
             try:
-                # 簡單 log，不刷屏
                 if i == 0: print(f"[{name}] 抓取中...")
                 else: print(f"[{name}] 重試中 ({i+1})...")
                 
@@ -183,6 +204,11 @@ def fetch_all_indices():
     if RUN_RISK_RATIO: results['RISK_RATIO'] = run_fetcher('RISK_RATIO', fetch_risk_on_off_ratio)
     if RUN_BTC: results['BTC'] = run_fetcher('BTC', fetch_bitcoin_trend)
     if RUN_RSI: results['RSI'] = run_fetcher('RSI', fetch_rsi_index)
+    
+    # [新增]
+    if RUN_IWM: results['IWM'] = run_fetcher('IWM', fetch_iwm_trend)
+    if RUN_HYG: results['HYG'] = run_fetcher('HYG', fetch_hyg_trend)
+    if RUN_SOXX: results['SOXX'] = run_fetcher('SOXX', fetch_soxx_trend)
 
     # 爬蟲類
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
@@ -203,7 +229,6 @@ def get_indicator_status(key, value):
         val_str = str(value).strip()
         status = "⚪ 中性" 
         
-        # 為了排版整齊，簡化部分文字
         if key == 'CNN':
             val = float(val_str.split()[0])
             if val <= 25: status = "🟢 極恐懼"
@@ -228,8 +253,8 @@ def get_indicator_status(key, value):
         
         elif key == 'DXY':
             val = float(val_str)
-            if val > 105: status = "🔴 強勢 (緊縮)"
-            elif val < 101: status = "🟢 弱勢 (寬鬆)"
+            if val > 105: status = "🔴 強勢"
+            elif val < 101: status = "🟢 弱勢"
 
         elif key == 'RISK_RATIO':
             if "↗️" in val_str: status = "🟢 Risk On"
@@ -246,6 +271,18 @@ def get_indicator_status(key, value):
             elif val < 30: status = "🟢 超賣"
             elif val > 60: status = "⚪ 強勢"
             elif val < 40: status = "⚪ 弱勢"
+
+        # [新增] 趨勢型指標 (Above/Below MA20)
+        elif key in ['IWM', 'SOXX', 'HYG']:
+            # 格式: "123.45 (Above)"
+            if "(Above)" in val_str:
+                if key == 'HYG': status = "🟢 資金流入 (Risk On)"
+                elif key == 'IWM': status = "🟢 廣度健康"
+                elif key == 'SOXX': status = "🟢 領頭羊強"
+            elif "(Below)" in val_str:
+                if key == 'HYG': status = "🔴 資金流出 (Risk Off)"
+                elif key == 'IWM': status = "🔴 廣度轉弱"
+                elif key == 'SOXX': status = "🔴 領頭羊弱"
 
         elif key == 'AAII':
             if isinstance(value, tuple):
@@ -296,7 +333,7 @@ def send_discord_embed(results, market_text, summary_text):
 
     today_date = datetime.datetime.now().strftime("%Y-%m-%d")
     
-    # 顏色邏輯
+    # 顏色邏輯 (使用 RSI 或 CNN 輔助)
     color = 0x808080 
     try:
         val = float(str(results.get('CNN', '50')).split()[0])
@@ -306,50 +343,58 @@ def send_discord_embed(results, market_text, summary_text):
 
     fields = []
     
-    # 1. 總結與大盤 (保持獨立，清楚)
     fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
 
-    # --- 排版優化：使用分類字串，而不是一堆 Grid ---
-    
-    # 輔助函式：產生單行格式
     def fmt_line(name, key):
         val = results.get(key)
         if not val: return f"> {name}: N/A"
         val_str, status = get_indicator_status(key, val)
-        # 格式： > 🇺🇸 10年債: 4.20% (中性)
         return f"> {name}: **{val_str}** ({status})"
 
-    # 分類 1: 🌊 流動性與風險 (總經)
+    # --- 四大分類排版 ---
+
+    # 1. 🌊 宏觀與資金 (Macro & Credit)
+    # 包含: 10年債, 美元, 高收益債(HYG), 比特幣
     macro_str = ""
     macro_str += fmt_line("🇺🇸 10年債", "BOND_10Y") + "\n"
     macro_str += fmt_line("💵 美元 DXY", "DXY") + "\n"
-    macro_str += fmt_line("🪙 比特幣", "BTC") + "\n"
-    macro_str += fmt_line("⚖️ 風險胃口", "RISK_RATIO")
-    fields.append({"name": "🌊 流動性與風險 (Macro)", "value": macro_str, "inline": False})
+    macro_str += fmt_line("💳 高收債 HYG", "HYG") + "\n"
+    macro_str += fmt_line("🪙 比特幣", "BTC")
+    fields.append({"name": "🌊 宏觀與資金 (Macro & Credit)", "value": macro_str, "inline": False})
 
-    # 分類 2: 🌡️ 技術與波動 (技術面)
+    # 2. 🏗️ 結構與板塊 (Structure & Sectors)
+    # 包含: 羅素2000(IWM), 半導體(SOXX), 風險胃口(XLY/XLP)
+    struct_str = ""
+    struct_str += fmt_line("🏢 羅素2000", "IWM") + "\n"
+    struct_str += fmt_line("⚡ 半導體 SOXX", "SOXX") + "\n"
+    struct_str += fmt_line("⚖️ 風險胃口", "RISK_RATIO")
+    fields.append({"name": "🏗️ 結構與板塊 (Structure & Sectors)", "value": struct_str, "inline": False})
+
+    # 3. 🌡️ 技術與情緒 (Tech & Sentiment)
+    # 包含: RSI, VIX, CNN, 200日線
     tech_str = ""
     tech_str += fmt_line("📈 大盤 RSI", "RSI") + "\n"
     tech_str += fmt_line("🌪️ VIX 波動", "VIX") + "\n"
     tech_str += fmt_line("😱 CNN 情緒", "CNN") + "\n"
     tech_str += fmt_line("📊 >200日線", "ABOVE_200_DAYS")
-    fields.append({"name": "🌡️ 技術與波動 (Technical)", "value": tech_str, "inline": False})
+    fields.append({"name": "🌡️ 技術與情緒 (Tech & Sentiment)", "value": tech_str, "inline": False})
 
-    # 分類 3: 🐳 籌碼與情緒 (機構/散戶)
+    # 4. 🐳 籌碼與內資 (Smart Money)
+    # 包含: NAAIM, SKEW, AAII, Put/Call
     fund_str = ""
     fund_str += fmt_line("🏦 機構持倉", "NAAIM") + "\n"
     fund_str += fmt_line("🦢 黑天鵝 SKEW", "SKEW") + "\n"
     fund_str += fmt_line("🐂 散戶 AAII", "AAII") + "\n"
     fund_str += fmt_line("⚖️ Put/Call", "PUT_CALL")
-    fields.append({"name": "🐳 籌碼與情緒 (Smart Money)", "value": fund_str, "inline": False})
+    fields.append({"name": "🐳 籌碼與內資 (Smart Money)", "value": fund_str, "inline": False})
 
     data = {
         "embeds": [{
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (v2.7 Clean UI)"},
+            "footer": {"text": "Github Actions Auto Bot (v2.8 Full Analysis)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
