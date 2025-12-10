@@ -1,0 +1,28 @@
+name: Test V2 Script (Visual Upgrade)
+
+on:
+  # 只有手動觸發，不會自動定時跑
+  workflow_dispatch:
+
+jobs:
+  test-v2:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+
+      - name: Run Main V2
+        env:
+          DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
+        run: |
+          python main_v2.py
