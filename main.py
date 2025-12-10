@@ -179,7 +179,7 @@ def save_history_csv(results):
         
         if isinstance(aaii_val, tuple) and len(aaii_val) >= 3:
             # 如果是 Tuple，直接取第三個值 (差值)
-            aaii_diff_str = str(aaii_val[2])
+            aaii_diff_str = f"{aaii_val[2]:.2f}"            
         elif isinstance(aaii_val, str):
             # 如果是字串 (可能是錯誤訊息)，嘗試提取
             aaii_diff_str = extract_numeric_value(aaii_val)
@@ -498,3 +498,4 @@ if __name__ == "__main__":
     save_history_csv(results)
     
     pause_for_exit()
+
