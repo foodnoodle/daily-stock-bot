@@ -1,7 +1,6 @@
-# --- main_v2.py (v2.2: 修正 SKEW 黑天鵝邏輯) ---
+# --- main_v2.py (v2.3: 修正 SKEW 邏輯 + 新增失敗重試機制) ---
 import os
 import sys
-import io
 import requests
 import time
 import datetime
@@ -56,18 +55,61 @@ def fetch_market_data():
     except Exception as e:
         return f"無法取得大盤數據: {e}"
 
-# 2. 抓取指標 (依序執行)
+# 2. 抓取指標 (依序執行，含重試機制)
 def fetch_all_indices():
     results = {}
     failed_keys = []
     print("🚀 開始依序抓取數據...")
 
     def run_fetcher(name, fetch_func):
-        print(f"[{name}] 正在抓取...")
-        try:
-            return fetch_func()
-        except Exception as e:
-            return f"錯誤: {e}"
+        max_retries = 3
+        
+        for i in range(max_retries):
+            attempt = i + 1
+            if attempt > 1:
+                print(f"[{name}] ⚠️ 抓取失敗，正在重試 (第 {attempt}/{max_retries} 次)...")
+            else:
+                print(f"[{name}] 正在抓取...")
+            
+            try:
+                result = fetch_func()
+                
+                # --- 判斷是否為失敗結果 ---
+                is_error = False
+                error_msg = ""
+                
+                # 狀況 1: 回傳結果是錯誤字串 (適用大部分指標)
+                if isinstance(result, str) and "錯誤" in result:
+                    is_error = True
+                    error_msg = result
+                
+                # 狀況 2: 回傳結果是 Tuple 且包含 None (適用 AAII)
+                # AAII 失敗時通常回傳 (None, None, "錯誤訊息")
+                elif isinstance(result, tuple) and result[0] is None:
+                    is_error = True
+                    error_msg = result[2] if len(result) > 2 else "抓取失敗 (Unknown)"
+
+                # --- 處理結果 ---
+                if not is_error:
+                    return result # 成功！直接回傳
+                
+                # 若是失敗：
+                if attempt == max_retries:
+                    # 已經是最後一次嘗試，回傳錯誤訊息
+                    print(f"   ❌ [{name}] 最終失敗: {error_msg}")
+                    return error_msg
+                else:
+                    # 還有機會，等待後重試
+                    time.sleep(5)
+
+            except Exception as e:
+                # 處理未被捕捉的程式例外
+                if attempt == max_retries:
+                    return f"錯誤: {e}"
+                print(f"   ⚠️ 發生例外: {e}")
+                time.sleep(5)
+                
+        return "錯誤: 未知原因失敗"
 
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
     if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
