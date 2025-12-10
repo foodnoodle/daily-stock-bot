@@ -1,10 +1,10 @@
-# --- 程式主要執行區 ---
-
+# --- main_v2.py (終極版：圖文卡片 + 大盤行情 + 情緒總結) ---
 import os
 import sys
 import io
 import requests
 import time
+import yfinance as yf 
 
 # 引入你的其他模組
 from aaii_index import fetch_aaii_bull_bear_diff
@@ -24,258 +24,197 @@ RUN_NAAIM = True
 RUN_SKEW = True
 RUN_ABOVE_200_DAYS = True
 
+# 1. 抓取大盤行情的函式
+def fetch_market_data():
+    try:
+        tickers = ["SPY", "QQQ"]
+        data = yf.download(tickers, period="2d", progress=False)['Close']
+        
+        market_info = []
+        for symbol in tickers:
+            try:
+                if len(data) >= 2:
+                    current = data[symbol].iloc[-1]
+                    prev = data[symbol].iloc[-2]
+                    change_pct = ((current - prev) / prev) * 100
+                    icon = "📈" if change_pct > 0 else "📉"
+                    market_info.append(f"{icon} **{symbol}**: {current:.2f} ({change_pct:+.2f}%)")
+                else:
+                    market_info.append(f"❓ {symbol}: 數據不足")
+            except Exception:
+                market_info.append(f"❓ {symbol}: 讀取失敗")
+        
+        return "\n".join(market_info)
+    except Exception as e:
+        return f"無法取得大盤數據: {e}"
+
+# 2. 抓取所有指標 (依序執行)
 def fetch_all_indices():
     results = {}
     failed_keys = []
     
-    print("🚀 開始依序抓取數據 (避免資源超載)...")
+    print("🚀 開始依序抓取數據...")
 
-    # 定義一個 helper 函式來執行抓取與錯誤處理
     def run_fetcher(name, fetch_func):
         print(f"[{name}] 正在抓取...")
         try:
-            # 執行抓取
-            res = fetch_func()
-            return res
+            return fetch_func()
         except Exception as e:
-            return f"抓取過程中發生錯誤: {e}"
+            return f"錯誤: {e}"
 
-    # --- 改為依序執行 (Sequential Execution) ---
-    
-    if RUN_AAII:
-        results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
-        
-    if RUN_PUT_CALL:
-        results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
-        
-    if RUN_VIX:
-        results['VIX'] = run_fetcher('VIX', fetch_vix_index)
-        
-    if RUN_CNN:
-        results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
-        
-    if RUN_NAAIM:
-        results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
-        
-    if RUN_SKEW:
-        results['SKEW'] = run_fetcher('SKEW', fetch_skew_index)
-        
-    if RUN_ABOVE_200_DAYS:
-        results['ABOVE_200_DAYS'] = run_fetcher('ABOVE_200_DAYS', fetch_above_200_days_average)
+    if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
+    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
+    if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
+    if RUN_CNN: results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
+    if RUN_NAAIM: results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
+    if RUN_SKEW: results['SKEW'] = run_fetcher('SKEW', fetch_skew_index)
+    if RUN_ABOVE_200_DAYS: results['ABOVE_200_DAYS'] = run_fetcher('ABOVE_200_DAYS', fetch_above_200_days_average)
 
-    # 檢查失敗指標
     for key, value in results.items():
-        # 如果回傳是字串且包含錯誤訊息，或者結果是 None
         if (isinstance(value, str) and "錯誤" in value) or value is None:
             failed_keys.append(key)
-            print(f"⚠️ {key} 失敗: {value}")
             
     return results, failed_keys
 
-def judge_signal():
-    results, failed_keys = fetch_all_indices()
-    print("\n【成功爬取指標結果如下】")
-    # AAII
-    aaii_signal = "無法判斷"
-    if RUN_AAII and 'AAII' not in failed_keys:
-        bull, bear, diff = results.get('AAII', (None, None, None))
-        if bull is not None:
-            if diff < -15:
-                aaii_signal = "偏多(極度悲觀)"
-            elif diff > 15:
-                aaii_signal = "偏空(極度樂觀)"
-            else:
-                aaii_signal = "中性"
-            print(f"\n(A.) AAII散戶情緒 \n\n  最新一週 \n  看多: {bull}% | 看空: {bear}% \n  差值(看多-看空): {diff:.1f}%\n  市場訊號: {aaii_signal}\n----------------------------------------------")
-    
-    # PUT/CALL
-    put_call_signal = "無法判斷"
-    if RUN_PUT_CALL and 'PUT_CALL' not in failed_keys:
-        put_call_value = results.get('PUT_CALL')
-        try:
-            val = float(put_call_value)
-            if val > 1.0:
-                put_call_signal = "偏多(過度悲觀)"
-            elif val < 0.8:
-                put_call_signal = "偏空(過度樂觀)"
-            else:
-                put_call_signal = "中性"
-        except:
-            put_call_signal = "無法判斷"
-        print(f"\n(B.) PUT/CALL Ratio \n\n  最新數值: {put_call_value}\n  市場訊號: {put_call_signal}\n----------------------------------------------")
-    
-    # VIX
-    vix_signal = "無法判斷"
-    if RUN_VIX and 'VIX' not in failed_keys:
-        vix_value = results.get('VIX')
-        try:
-            val = float(vix_value)
-            if val > 30:
-                vix_signal = "偏多(市場恐慌)"
-            elif val < 15:
-                vix_signal = "偏空(市場自滿)"
-            else:
-                vix_signal = "中性"
-        except:
-            vix_signal = "無法判斷"
-        print(f"\n(C.) VIX 指數 \n\n  最新數值: {vix_value}\n  市場訊號: {vix_signal}\n----------------------------------------------")
-    
-    # CNN
-    cnn_signal = "無法判斷"
-    if RUN_CNN and 'CNN' not in failed_keys:
-        value = results.get('CNN')
-        try:
-            val_str = str(value).split()[0] 
-            val = float(val_str)
-            if val <= 25:
-                cnn_signal = "極度恐懼"
-                cnn_status = "市場可能過度恐慌"
-                cnn_strategy = "增加投資，尋找低估股票"
-            elif 26 <= val <= 44:
-                cnn_signal = "恐懼"
-                cnn_status = "市場可能處於低位"
-                cnn_strategy = "考慮增加投資"
-            elif 45 <= val <= 55:
-                cnn_signal = "中立"
-                cnn_status = "市場相對穩定"
-                cnn_strategy = "觀望"
-            elif 56 <= val <= 74:
-                cnn_signal = "貪婪"
-                cnn_status = "市場可能處於高位"
-                cnn_strategy = "保持警覺"
-            elif 75 <= val <= 100:
-                cnn_signal = "極度貪婪"
-                cnn_status = "市場過熱"
-                cnn_strategy = "減少投資或出場"
-            else:
-                cnn_signal = "無法判斷"
-        except:
-            cnn_signal = "無法判斷"
-            cnn_status = "-"
-            cnn_strategy = "-"
-        print(f"\n(D.) CNN 恐貪指數 \n\n  最新數值: {value}\n  市場情緒: {cnn_signal}\n  當前市場狀況: {cnn_status}\n  進出場策略: {cnn_strategy}\n----------------------------------------------")
-    
-    # NAAIM
-    naaim_signal = "無法判斷"
-    if RUN_NAAIM and 'NAAIM' not in failed_keys:
-        naaim_value = results.get('NAAIM')
-        try:
-            val = float(naaim_value)
-            if val < 20:
-                naaim_signal = "偏多(經理人悲觀)"
-            elif val > 80:
-                naaim_signal = "偏空(經理人樂觀)"
-            else:
-                naaim_signal = "中性"
-        except:
-            naaim_signal = "無法判斷"
-        print(f"\n(E.) NAAIM 曝險指數 \n\n  最新數值: {naaim_value}\n  市場訊號: {naaim_signal}\n----------------------------------------------")
-    
-    # SKEW
-    skew_signal = "無法判斷"
-    if RUN_SKEW and 'SKEW' not in failed_keys:
-        skew_value = results.get('SKEW')
-        try:
-            val = float(skew_value)
-            if val > 140:
-                skew_signal = "偏空(黑天鵝風險)"
-            else:
-                skew_signal = "中性"
-        except:
-            skew_signal = "無法判斷"
-        print(f"\n(F.) SKEW 黑天鵝指標 \n\n  最新數值: {skew_value}\n  市場訊號: {skew_signal}\n----------------------------------------------")
-
-    # 高於200日線
-    above_200_signal = "無法判斷"
-    if RUN_ABOVE_200_DAYS and 'ABOVE_200_DAYS' not in failed_keys:
-        above_200_days_value = results.get('ABOVE_200_DAYS')
-        try:
-            val = float(above_200_days_value.replace('%',''))
-            if val < 20:
-                above_200_signal = "偏多(市場極度超賣)"
-            elif val > 80:
-                above_200_signal = "偏空(市場極度超買)"
-            else:
-                above_200_signal = "中性"
-        except:
-            above_200_signal = "無法判斷"
-        print(f"\n(G.) 高於200日線股票比例 \n\n  最新數值: {above_200_days_value}\n  市場訊號: {above_200_signal}\n----------------------------------------------")
-
-    # 統計市場情緒
+# 3. 計算市場情緒總結 (這就是你要找回的功能！)
+def calculate_sentiment_summary(results):
     signals = []
-    current_signals = [aaii_signal, put_call_signal, vix_signal, naaim_signal, skew_signal, above_200_signal]
-    for s in current_signals:
-        if "偏多" in s: signals.append("偏多")
-        elif "偏空" in s: signals.append("偏空")
-        elif "中性" in s: signals.append("中性")
     
-    if cnn_signal in ["極度恐懼", "恐懼"]: signals.append("偏多")
-    elif cnn_signal in ["極度貪婪", "貪婪"]: signals.append("偏空")
-    elif cnn_signal == "中立": signals.append("中性")
+    # 判斷邏輯 (依照原本 main.py 的標準)
+    try:
+        # AAII
+        if 'AAII' in results and isinstance(results['AAII'], tuple):
+            bull, bear, diff = results['AAII']
+            if diff < -15: signals.append("偏多")
+            elif diff > 15: signals.append("偏空")
+        
+        # Put/Call
+        pc = float(results.get('PUT_CALL', 0))
+        if pc > 1.0: signals.append("偏多")
+        elif pc < 0.8: signals.append("偏空")
+        
+        # VIX
+        vix = float(results.get('VIX', 0))
+        if vix > 30: signals.append("偏多")
+        elif vix < 15: signals.append("偏空")
+        
+        # CNN
+        cnn_val = float(str(results.get('CNN', 0)).split()[0])
+        if cnn_val <= 44: signals.append("偏多")
+        elif cnn_val >= 56: signals.append("偏空")
+        
+        # NAAIM
+        naaim = float(results.get('NAAIM', 0))
+        if naaim < 20: signals.append("偏多")
+        elif naaim > 80: signals.append("偏空")
+        
+        # SKEW
+        skew = float(results.get('SKEW', 0))
+        if skew > 140: signals.append("偏空")
+        
+        # Above 200
+        above = float(str(results.get('ABOVE_200_DAYS', 0)).replace('%',''))
+        if above < 20: signals.append("偏多")
+        elif above > 80: signals.append("偏空")
+        
+    except Exception as e:
+        print(f"計算情緒時發生部分錯誤 (可忽略): {e}")
 
-    bullish = signals.count("偏多")
-    bearish = signals.count("偏空")
+    bull_count = signals.count("偏多")
+    bear_count = signals.count("偏空")
     
-    print("\n【市場情緒總結】")
-    print(f"偏多訊號數: {bullish}，偏空訊號數: {bearish}")
-    if bullish > bearish:
-        print("🟢 市場情緒偏向恐懼，可尋找機會")
-    elif bearish > bullish:
-        print("🔴 市場情緒偏向貪婪，建議謹慎")
-    else:
-        print("⚪ 市場情緒分歧，建議多觀察，勿躁進。")
-    
-    if failed_keys:
-        print(f"\n以下指標爬取失敗: {', '.join(failed_keys)}")
+    conclusion = "⚪ 市場情緒分歧，建議觀望"
+    if bull_count > bear_count:
+        conclusion = "🟢 市場偏向恐懼 (可能存在機會)"
+    elif bear_count > bull_count:
+        conclusion = "🔴 市場偏向貪婪 (建議謹慎)"
+        
+    return f"**多方訊號**: {bull_count} | **空方訊號**: {bear_count}\n👉 {conclusion}"
 
-# --- 新增的 Discord 發送功能 ---
-def send_to_discord(message_content):
+# 4. 發送 Discord Embed (卡片)
+def send_discord_embed(results, market_text, summary_text):
     webhook_url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not webhook_url:
-        print("❌ 未設定 DISCORD_WEBHOOK_URL，跳過發送通知。")
+        print("❌ 未設定 Webhook URL")
         return
 
-    # Discord 限制單則訊息 2000 字
-    if len(message_content) > 1900:
-        message_content = message_content[:1900] + "\n... (內容過長已截斷)"
+    # 決定卡片顏色 (依據 CNN)
+    color = 0x808080 
+    try:
+        val = float(str(results.get('CNN', '50')).split()[0])
+        if val <= 25: color = 0x00FF00 
+        elif 25 < val <= 45: color = 0x90EE90
+        elif 55 < val <= 75: color = 0xFF6347
+        elif val > 75: color = 0xFF0000 
+    except: pass
+
+    fields = []
+    
+    # [新增] 總結摘要放在最上面
+    fields.append({
+        "name": "🔮 市場情緒總結",
+        "value": summary_text,
+        "inline": False
+    })
+
+    # 大盤行情
+    fields.append({
+        "name": "📊 美股大盤走勢",
+        "value": market_text if market_text else "無法讀取",
+        "inline": False
+    })
+
+    # 各項指標
+    fields.append({"name": "😱 CNN 恐懼貪婪", "value": str(results.get('CNN', 'N/A')), "inline": True})
+    fields.append({"name": "🌪️ VIX 波動率", "value": str(results.get('VIX', 'N/A')), "inline": True})
+    fields.append({"name": "⚖️ Put/Call Ratio", "value": str(results.get('PUT_CALL', 'N/A')), "inline": True})
+
+    aaii = results.get('AAII')
+    aaii_str = f"多: {aaii[0]}% | 空: {aaii[1]}%" if isinstance(aaii, tuple) else str(aaii)
+    fields.append({"name": "🐂 AAII 散戶", "value": aaii_str, "inline": True})
+
+    fields.append({"name": "🏦 NAAIM 經理人", "value": str(results.get('NAAIM', 'N/A')), "inline": True})
+    fields.append({"name": "🦢 SKEW 黑天鵝", "value": str(results.get('SKEW', 'N/A')), "inline": True})
+    fields.append({"name": "📈 >200日線%", "value": str(results.get('ABOVE_200_DAYS', 'N/A')), "inline": True})
 
     data = {
-        "content": f"```\n{message_content}\n```"
+        "embeds": [{
+            "title": "📅 每日財經情緒日報",
+            "color": color,
+            "fields": fields,
+            "footer": {"text": "Github Actions Auto Bot"},
+            "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+        }]
     }
-    
-    try:
-        response = requests.post(webhook_url, json=data)
-        if response.status_code in [200, 204]:
-            print("✅ Discord 通知發送成功！")
-        else:
-            print(f"❌ Discord 通知發送失敗: {response.status_code}")
-    except Exception as e:
-        print(f"❌ Discord 通知發送失敗: {e}")
 
-# --- 智慧暫停功能 ---
+    try:
+        requests.post(webhook_url, json=data)
+        print("✅ Discord Embed 發送成功！")
+    except Exception as e:
+        print(f"❌ 發送錯誤: {e}")
+
+# 防呆暫停
 def pause_for_exit():
     if os.environ.get("GITHUB_ACTIONS") == "true" or not sys.stdin.isatty():
-        print("(雲端執行模式：跳過暫停，直接結束程式)")
         return
     try:
-        input("\n所有數據已顯示完畢，請按 Enter 鍵關閉視窗...")
-    except EOFError:
-        pass
+        input("按 Enter 結束...")
+    except: pass
 
 if __name__ == "__main__":
-    captured_output = io.StringIO()
-    original_stdout = sys.stdout
-    sys.stdout = captured_output
+    # 1. 抓指標
+    results, failed = fetch_all_indices()
     
-    try:
-        judge_signal()
-    except Exception as e:
-        print(f"執行過程中發生未預期的錯誤: {e}")
-    finally:
-        sys.stdout = original_stdout
-
-    report_text = captured_output.getvalue()
-    print(report_text)
-    print("正在準備傳送 Discord 通知...")
-    send_to_discord(report_text)
+    # 2. 抓大盤
+    print("\n[Market] 正在抓取大盤資訊...")
+    market_text = fetch_market_data()
+    
+    # 3. 計算總結
+    print("[Analysis] 正在分析市場情緒...")
+    summary_text = calculate_sentiment_summary(results)
+    
+    # 4. 發送
+    print("\n正在發送 Discord 通知...")
+    send_discord_embed(results, market_text, summary_text)
+    
     pause_for_exit()
