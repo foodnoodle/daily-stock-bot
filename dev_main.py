@@ -1,12 +1,13 @@
-# --- dev_main.py (v2.5: 新增美元指數 + 風險胃口指標) ---
+# --- dev_main.py (v2.6: 全功能終極版 - 含 BTC & RSI) ---
 import os
 import sys
 import requests
 import time
 import datetime
 import yfinance as yf 
+import pandas as pd # 引入 pandas 進行計算
 
-# 引入你的其他模組 (部分爬蟲仍保留)
+# 引入你的其他模組
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from put_call_ratio import fetch_total_put_call_ratio
@@ -15,6 +16,7 @@ from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
 
 # --- [設定開關] ---
+# 爬蟲類
 RUN_AAII = True
 RUN_CNN = True
 RUN_PUT_CALL = True
@@ -22,14 +24,16 @@ RUN_NAAIM = True
 RUN_SKEW = True
 RUN_ABOVE_200_DAYS = True
 
-# API 指標開關
+# API 類 (yfinance)
 RUN_VIX = True
 RUN_BOND_YIELD = True
-RUN_DXY = True          # [新增] 美元指數
-RUN_RISK_RATIO = True   # [新增] 風險胃口 (XLY/XLP)
+RUN_DXY = True          
+RUN_RISK_RATIO = True   
+RUN_BTC = True          # [新增] 比特幣
+RUN_RSI = True          # [新增] RSI指標
 
 
-# --- [API 抓取區] 使用 yfinance (穩定、快速) ---
+# --- [API 抓取與計算區] ---
 
 def fetch_vix_index():
     """抓取 VIX 恐慌指數"""
@@ -49,16 +53,15 @@ def fetch_10y_treasury_yield():
         data = ticker.history(period="1d")
         if not data.empty:
             val = data['Close'].iloc[-1]
-            if val > 20: val = val / 10 # 修正 Yahoo 數據單位的潛在問題
+            if val > 20: val = val / 10
             return f"{val:.2f}%"
         return "抓取失敗"
     except Exception as e:
         return f"錯誤: {e}"
 
 def fetch_dxy_index():
-    """[新增] 抓取美元指數 (DXY)"""
+    """抓取美元指數 (DXY)"""
     try:
-        # Yahoo Finance 代號為 DX-Y.NYB
         ticker = yf.Ticker("DX-Y.NYB")
         data = ticker.history(period="1d")
         if not data.empty:
@@ -68,29 +71,65 @@ def fetch_dxy_index():
         return f"錯誤: {e}"
 
 def fetch_risk_on_off_ratio():
-    """[新增] 計算 XLY/XLP 風險胃口比率"""
+    """計算 XLY/XLP 風險胃口比率"""
     try:
-        # 一次抓取兩檔 ETF
         tickers = ["XLY", "XLP"]
-        # 抓 5 天以確保有足夠資料計算漲跌
         data = yf.download(tickers, period="5d", progress=False)['Close']
-        
         if len(data) >= 2:
-            # 取得最新與前一天的收盤價
             xly_now = data['XLY'].iloc[-1]
             xlp_now = data['XLP'].iloc[-1]
+            ratio_now = xly_now / xlp_now
+            
             xly_prev = data['XLY'].iloc[-2]
             xlp_prev = data['XLP'].iloc[-2]
-            
-            # 計算比率
-            ratio_now = xly_now / xlp_now
             ratio_prev = xly_prev / xlp_prev
             
-            # 判斷趨勢
             change = ratio_now - ratio_prev
             icon = "↗️" if change > 0 else "↘️"
-            
             return f"{ratio_now:.2f} ({icon})"
+        return "數據不足"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+def fetch_bitcoin_trend():
+    """[新增] 抓取比特幣漲跌幅"""
+    try:
+        ticker = yf.Ticker("BTC-USD")
+        # 抓 2 天來計算漲跌幅
+        data = ticker.history(period="2d")
+        if len(data) >= 2:
+            now = data['Close'].iloc[-1]
+            prev = data['Close'].iloc[-2]
+            pct_change = ((now - prev) / prev) * 100
+            
+            # 回傳格式： +3.5% (2024-xx-xx)
+            return f"{pct_change:+.2f}%"
+        return "數據不足"
+    except Exception as e:
+        return f"錯誤: {e}"
+
+def fetch_rsi_index():
+    """[新增] 計算 S&P 500 的 14 天 RSI"""
+    try:
+        # 抓取 S&P 500 過去 2 個月資料以確保有足夠天數計算 RSI
+        ticker = yf.Ticker("^GSPC")
+        data = ticker.history(period="2mo")
+        
+        if len(data) > 14:
+            # 計算 RSI 邏輯
+            delta = data['Close'].diff()
+            gain = (delta.where(delta > 0, 0))
+            loss = (-delta.where(delta < 0, 0))
+            
+            # 使用 Wilder's Smoothing (標準 RSI 算法)
+            avg_gain = gain.ewm(com=13, adjust=False).mean()
+            avg_loss = loss.ewm(com=13, adjust=False).mean()
+            
+            rs = avg_gain / avg_loss
+            rsi = 100 - (100 / (1 + rs))
+            
+            last_rsi = rsi.iloc[-1]
+            return f"{last_rsi:.1f}"
         return "數據不足"
     except Exception as e:
         return f"錯誤: {e}"
@@ -104,7 +143,6 @@ def fetch_market_data():
         tickers = ["^GSPC", "^NDX"]
         data = yf.download(tickers, period="2d", progress=False)['Close']
         name_map = {"^GSPC": "S&P 500", "^NDX": "Nasdaq 100"}
-        
         market_info = []
         for symbol in tickers:
             try:
@@ -115,7 +153,6 @@ def fetch_market_data():
                     except:
                         current = data.iloc[-1]
                         prev = data.iloc[-2]
-
                     change_pct = ((current - prev) / prev) * 100
                     icon = "📈" if change_pct > 0 else "📉"
                     display_name = name_map.get(symbol, symbol)
@@ -124,13 +161,12 @@ def fetch_market_data():
                     market_info.append(f"❓ {symbol}: 數據不足")
             except Exception as e:
                 market_info.append(f"❓ {symbol}: {e}")
-        
         return "\n".join(market_info)
     except Exception as e:
         return f"無法取得大盤數據: {e}"
 
 def fetch_all_indices():
-    """抓取所有指標 (依序執行，含重試機制)"""
+    """抓取所有指標"""
     results = {}
     failed_keys = []
     print("🚀 開始依序抓取數據...")
@@ -146,37 +182,34 @@ def fetch_all_indices():
             
             try:
                 result = fetch_func()
-                
                 # 錯誤檢查
                 is_error = False
                 error_msg = ""
                 if isinstance(result, str) and "錯誤" in result:
-                    is_error = True
-                    error_msg = result
+                    is_error = True; error_msg = result
                 elif isinstance(result, tuple) and result[0] is None:
-                    is_error = True
-                    error_msg = result[2] if len(result) > 2 else "失敗"
+                    is_error = True; error_msg = result[2] if len(result) > 2 else "失敗"
 
-                if not is_error:
-                    return result
+                if not is_error: return result
                 
                 if attempt == max_retries:
                     print(f"   ❌ [{name}] 最終失敗: {error_msg}")
                     return error_msg
                 else:
                     time.sleep(2)
-
             except Exception as e:
-                if attempt == max_retries:
-                    return f"錯誤: {e}"
+                if attempt == max_retries: return f"錯誤: {e}"
                 time.sleep(2)
         return "錯誤: 未知原因"
 
-    # 執行所有抓取任務
+    # API 類
     if RUN_BOND_YIELD: results['BOND_10Y'] = run_fetcher('BOND_10Y', fetch_10y_treasury_yield)
     if RUN_DXY: results['DXY'] = run_fetcher('DXY', fetch_dxy_index)
     if RUN_RISK_RATIO: results['RISK_RATIO'] = run_fetcher('RISK_RATIO', fetch_risk_on_off_ratio)
-    
+    if RUN_BTC: results['BTC'] = run_fetcher('BTC', fetch_bitcoin_trend)
+    if RUN_RSI: results['RSI'] = run_fetcher('RSI', fetch_rsi_index)
+
+    # 爬蟲類
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
     if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
     if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
@@ -219,19 +252,28 @@ def get_indicator_status(key, value):
             elif val < 3.5: status = "🟢 利率舒適 (寬鬆)"
         
         elif key == 'DXY':
-            # 美元指數判讀
             val = float(val_str)
             if val > 105: status = "🔴 美元強勢 (資金緊縮)"
             elif val < 101: status = "🟢 美元弱勢 (資金寬鬆)"
-            else: status = "⚪ 美元盤整"
 
         elif key == 'RISK_RATIO':
-            # 風險胃口 (XLY/XLP)
-            # 根據箭頭符號判斷趨勢
-            if "↗️" in val_str:
-                status = "🟢 風險偏好升 (Risk On)"
-            elif "↘️" in val_str:
-                status = "🔴 風險偏好降 (Risk Off)"
+            if "↗️" in val_str: status = "🟢 風險偏好升 (Risk On)"
+            elif "↘️" in val_str: status = "🔴 風險偏好降 (Risk Off)"
+
+        # [新增] BTC 判讀：只在大漲大跌時表態
+        elif key == 'BTC':
+            val = float(val_str.replace('%','').replace('+',''))
+            if val > 3.0: status = "🟢 幣圈大漲 (Risk On)"
+            elif val < -3.0: status = "🔴 幣圈大跌 (Risk Off)"
+            else: status = "⚪ 波動正常 (中性)"
+
+        # [新增] RSI 判讀：過熱與超賣
+        elif key == 'RSI':
+            val = float(val_str)
+            if val > 70: status = "🔴 RSI過熱 (隨時回檔)"
+            elif val < 30: status = "🟢 RSI超賣 (反彈機會)"
+            elif val > 60: status = "⚪ 技術面強勢"
+            elif val < 40: status = "⚪ 技術面弱勢"
 
         elif key == 'AAII':
             if isinstance(value, tuple):
@@ -299,10 +341,16 @@ def send_discord_embed(results, market_text, summary_text):
     fields.append({"name": "🔮 市場情緒總結", "value": summary_text, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text if market_text else "無法讀取", "inline": False})
 
-    # [調整] 顯示順序，把 總經指標 放在前面
-    order = ['BOND_10Y', 'DXY', 'RISK_RATIO', 'CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS']
+    # [調整] 顯示順序
+    order = [
+        'RSI', 'BTC',            # 新增的放前面一點
+        'BOND_10Y', 'DXY', 'RISK_RATIO', 
+        'CNN', 'VIX', 'PUT_CALL', 'AAII', 'NAAIM', 'SKEW', 'ABOVE_200_DAYS'
+    ]
     
     names = {
+        'RSI': '📈 大盤 RSI (14)',
+        'BTC': '🪙 比特幣走勢',
         'BOND_10Y': '🇺🇸 10年債殖利率',
         'DXY': '💵 美元指數',
         'RISK_RATIO': '⚖️ 風險胃口 (XLY/XLP)',
@@ -330,7 +378,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (API v2.5)"},
+            "footer": {"text": "Github Actions Auto Bot (API v2.6)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
