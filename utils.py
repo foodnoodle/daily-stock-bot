@@ -1,4 +1,4 @@
-# --- utils.py (v5.1: 支援 AAII 格式化顯示) ---
+# --- utils.py (v5.2: 介面美化 - 增加分類間距) ---
 import os
 import requests
 import datetime
@@ -15,10 +15,10 @@ def extract_numeric_value(text):
     return ""
 
 def get_indicator_status(key, value_in):
-    # [修正] 如果傳入的是 AAII 的 Tuple (Bull, Bear, Diff)，只取 Diff 來判斷
+    # 針對 AAII 進行特殊處理: 取 Tuple 第三個值 (Diff)
     value_str = value_in
     if key == 'AAII' and isinstance(value_in, tuple) and len(value_in) >= 3:
-        value_str = value_in[2] # 取出差值
+        value_str = value_in[2]
 
     if not value_str or "Error" in str(value_str) or "N/A" in str(value_str):
         return "⚠️ 無法判讀"
@@ -93,31 +93,44 @@ def send_discord(results, market_text, summary):
     }
     
     fields = []
+    
+    # 1. 總結與大盤
     fields.append({"name": "🔮 市場情緒總結", "value": summary, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text, "inline": False})
+    
+    # [美化] 在大盤與指標之間增加一點間距
+    fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
-    for cat_key, cat_name in categories.items():
+    # 2. 四大分類 (增加間距邏輯)
+    cat_items = list(categories.items())
+    
+    for i, (cat_key, cat_name) in enumerate(cat_items):
         content = ""
         cat_indicators = {k: v for k, v in INDICATORS.items() if v['category'] == cat_key}
+        
         for key, cfg in cat_indicators.items():
             val = results.get(key, "N/A")
             
-            # [修正] 針對 AAII 進行特殊格式化
+            # AAII 顯示修正
             display_val = val
             if key == 'AAII' and isinstance(val, tuple) and len(val) >= 3:
-                # 顯示格式：多44.3% | 空30.8%
                 display_val = f"多{val[0]}% | 空{val[1]}%"
             
             status = get_indicator_status(key, val)
             content += f"> {cfg['name']}: **{display_val}** ({status})\n"
+            
         fields.append({"name": cat_name, "value": content, "inline": False})
+        
+        # [美化] 如果不是最後一個分類，就加一個空白欄位當作換行
+        if i < len(cat_items) - 1:
+            fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
     data = {
         "embeds": [{
             "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
             "color": 0x808080,
             "fields": fields,
-            "footer": {"text": "Bot v5.1 (Fixed AAII/BTC)"},
+            "footer": {"text": "Bot v5.2 (UI Polished)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
@@ -137,9 +150,8 @@ def save_csv(results):
         }
         for k in keys:
             raw = results.get(k, "")
-            # AAII 修正邏輯
+            # AAII 修正邏輯: 差值取小數點後 1 位
             if k == 'AAII' and isinstance(raw, tuple):
-                # [修正] 差值取到小數點後 1 位
                 val = f"{raw[2]:.1f}"
             else:
                 val = extract_numeric_value(str(raw))
