@@ -1,9 +1,11 @@
-# --- utils.py (v6.0: 支援 AI 訓練數據格式) ---
+# --- utils.py (v6.1: 完美防呆版 - 自動跳過休市日與週末) ---
 import os
 import requests
 import datetime
 import csv
 import re
+import pandas as pd # 需要引入 pandas 來讀取 CSV
+import yfinance as yf # 需要引入 yf 來確認真實日期
 from config import INDICATORS, IMAGES
 import data_fetchers as df    
 
@@ -15,7 +17,6 @@ def extract_numeric_value(text):
     return ""
 
 def get_indicator_status(key, value_in):
-    # AAII 特殊處理
     value_str = value_in
     if key == 'AAII' and isinstance(value_in, tuple) and len(value_in) >= 3:
         value_str = value_in[2]
@@ -136,7 +137,7 @@ def send_discord(results, market_text, summary):
             "color": embed_color,
             "fields": fields,
             "image": {"url": thumbnail_url}, 
-            "footer": {"text": "Bot v6.0 (AI Data Ready)"},
+            "footer": {"text": "Bot v6.1 (Holiday Safe)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
@@ -149,39 +150,58 @@ def save_csv(results):
         if not os.path.exists(folder): os.makedirs(folder)
         file = "data/history.csv"
         
-        # [變更] 定義全新的 AI 友善欄位順序 (包含 SPX 和 NDX 的完整 OHLCV)
+        # 1. 取得市場真實交易日期 (這是防呆的核心)
+        try:
+            # 抓取 SPX 歷史資料來確認「最新的有效交易日」
+            t = yf.Ticker("^GSPC")
+            # 抓 5 天是為了避免長假 (如聖誕+週末)
+            hist = t.history(period="5d")
+            
+            if not hist.empty:
+                # 取得最後一筆資料的日期 (格式: YYYY-MM-DD)
+                last_trade_date = hist.index[-1].strftime("%Y-%m-%d")
+            else:
+                # 萬一 yfinance 掛了，只好退回到系統日期 (極少發生)
+                print("⚠️ 無法取得市場日期，使用系統日期")
+                last_trade_date = datetime.datetime.now().strftime("%Y-%m-%d")
+        except Exception as e:
+            print(f"❌ 日期偵測失敗: {e}")
+            last_trade_date = datetime.datetime.now().strftime("%Y-%m-%d")
+
+        print(f"📅 偵測到最新交易日為: {last_trade_date}")
+
+        # 2. 檢查 CSV 是否已存在該日期 (去重複)
+        if os.path.exists(file):
+            try:
+                # 讀取現有 CSV
+                existing_df = pd.read_csv(file)
+                # 檢查 Date 欄位
+                if 'Date' in existing_df.columns:
+                    if last_trade_date in existing_df['Date'].values.astype(str):
+                        print(f"🛑 日期 {last_trade_date} 已存在，今日不寫入 (可能是週末或休市)。")
+                        return # <--- 關鍵！直接結束函式，不存檔
+            except Exception as e:
+                print(f"⚠️ 讀取 CSV 檢查時發生錯誤 (可能檔案損壞，將嘗試附加): {e}")
+
+        # 3. 準備數據 (AI 訓練格式)
         fieldnames = [
             'Date', 
-            # SPX 數據
             'SPX_Open', 'SPX_High', 'SPX_Low', 'SPX_Close', 'SPX_Volume',
-            # NDX 數據
             'NDX_Open', 'NDX_High', 'NDX_Low', 'NDX_Close', 'NDX_Volume',
-            # 宏觀利率
             '10Y_Yield', '3M_Yield',
-            # 其他關鍵因子
             'RSI', 'VIX', 'CNN', 'Put_Call', 
             'DXY', 'BTC_Chg', 'HYG_Price', 
             'Risk_Ratio', 'IWM_Price', 'SOXX_Price', 
             'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
         ]
         
-        # 1. 抓取完整的 OHLCV 數據
         market_data = df.fetch_full_market_data()
-        
-        # 2. 抓取短債數據
         short_yield = df.fetch_short_term_yield()
-
-        # 3. 準備 AAII 數值
         aaii_raw = results.get('AAII', "")
-        aaii_val = ""
-        if isinstance(aaii_raw, tuple) and len(aaii_raw) >= 3:
-            aaii_val = f"{aaii_raw[2]:.1f}"
-        else:
-            aaii_val = extract_numeric_value(str(aaii_raw))
+        aaii_val = f"{aaii_raw[2]:.1f}" if isinstance(aaii_raw, tuple) and len(aaii_raw) >= 3 else extract_numeric_value(str(aaii_raw))
 
-        # 4. 組裝資料列
         row = {
-            'Date': datetime.datetime.now().strftime("%Y-%m-%d"),
+            'Date': last_trade_date, # [使用真實交易日]
             
             'SPX_Open': market_data.get('SPX_Open', ''),
             'SPX_High': market_data.get('SPX_High', ''),
@@ -214,10 +234,10 @@ def save_csv(results):
             'Above_200MA': extract_numeric_value(str(results.get('ABOVE_200_DAYS', '')))
         }
 
-        exists = os.path.isfile(file)
         with open(file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if not exists: writer.writeheader()
+            if not os.path.exists(file) or os.stat(file).st_size == 0:
+                writer.writeheader()
             writer.writerow(row)
             
         print(f"💾 數據已儲存至: {file}")
