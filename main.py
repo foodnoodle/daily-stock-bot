@@ -1,4 +1,4 @@
-# --- dev_main.py (v2.9.1: 修復 Risk Ratio 與 AAII CSV 寫入問題) ---
+# --- dev_main.py (v3.0: 模組化版) ---
 import os
 import sys
 import requests
@@ -9,13 +9,15 @@ import re
 import yfinance as yf 
 import pandas as pd
 
-# 引入原本的爬蟲模組
+# --- [模組匯入區] ---
+# 爬蟲與特殊指標
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
-from put_call_ratio import fetch_put_call_ratio_requests
 from naaim_index import fetch_naaim_exposure_index
 from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
+# [變更] 從 put_call_ratio.py 匯入智慧版函式
+from put_call_ratio import fetch_put_call_ratio
 
 # --- [設定開關] ---
 RUN_AAII = True
@@ -36,7 +38,7 @@ RUN_HYG = True
 RUN_SOXX = True
 
 
-# --- [API 抓取區] ---
+# --- [API 抓取區 (yfinance)] ---
 
 def fetch_vix_index():
     try:
@@ -77,14 +79,9 @@ def fetch_risk_on_off_ratio():
         if len(data) >= 2:
             xly = data['XLY']
             xlp = data['XLP']
-            
-            # [修復] 確保計算當前與前一日的比率
             ratio_now = xly.iloc[-1] / xlp.iloc[-1]
-            
             xly_prev = data['XLY'].iloc[-2]
             xlp_prev = data['XLP'].iloc[-2]
-            
-            # [修正 BUG] 之前漏了這一行，導致 NameError
             ratio_prev = xly_prev / xlp_prev
             
             change = ratio_now - ratio_prev
@@ -145,51 +142,39 @@ def fetch_soxx_trend(): return fetch_trend_vs_ma20("SOXX")
 # --- [核心功能: 數據保存] ---
 
 def extract_numeric_value(text):
-    """從字串中提取純數字"""
     if not isinstance(text, str): return ""
     clean_text = text.replace('%', '').replace('+', '').replace(',', '')
     match = re.search(r"[-+]?\d*\.\d+|\d+", clean_text)
-    if match:
-        return match.group()
+    if match: return match.group()
     return ""
 
 def get_sp500_price_raw():
     try:
         t = yf.Ticker("^GSPC")
         d = t.history(period="1d")
-        if not d.empty:
-            return f"{d['Close'].iloc[-1]:.2f}"
+        if not d.empty: return f"{d['Close'].iloc[-1]:.2f}"
     except: pass
     return ""
 
 def save_history_csv(results):
-    """將今日數據寫入 data/history.csv"""
     try:
         folder = "data"
-        if not os.path.exists(folder):
-            os.makedirs(folder)
-
+        if not os.path.exists(folder): os.makedirs(folder)
         file_path = os.path.join(folder, "history.csv")
         today_str = datetime.datetime.now().strftime("%Y-%m-%d")
         
-        # [修正 BUG] 處理 AAII 的 Tuple 格式
-        # AAII 回傳的是 (Bull, Bear, Diff)
         aaii_val = results.get('AAII')
         aaii_diff_str = ""
-        
         if isinstance(aaii_val, tuple) and len(aaii_val) >= 3:
-            # 如果是 Tuple，直接取第三個值 (差值)
-            aaii_diff_str = f"{aaii_val[2]:.2f}"            
+            # [設定] 保留兩位小數
+            aaii_diff_str = f"{aaii_val[2]:.2f}"
         elif isinstance(aaii_val, str):
-            # 如果是字串 (可能是錯誤訊息)，嘗試提取
             aaii_diff_str = extract_numeric_value(aaii_val)
 
         fieldnames = [
-            'Date', 'SPX_Price', 
-            'RSI', 'VIX', 'CNN', 'Put_Call', 
+            'Date', 'SPX_Price', 'RSI', 'VIX', 'CNN', 'Put_Call', 
             '10Y_Yield', 'DXY', 'BTC_Chg', 'HYG_Price', 'Risk_Ratio',
-            'IWM_Price', 'SOXX_Price', 
-            'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
+            'IWM_Price', 'SOXX_Price', 'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
         ]
         
         row_data = {
@@ -208,20 +193,16 @@ def save_history_csv(results):
             'SOXX_Price': extract_numeric_value(results.get('SOXX', '')),
             'NAAIM': extract_numeric_value(results.get('NAAIM', '')),
             'SKEW': extract_numeric_value(results.get('SKEW', '')),
-            'AAII_Diff': aaii_diff_str, # 使用修正後的變數
+            'AAII_Diff': aaii_diff_str,
             'Above_200MA': extract_numeric_value(results.get('ABOVE_200_DAYS', ''))
         }
 
         file_exists = os.path.isfile(file_path)
-        
         with open(file_path, mode='a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
-            if not file_exists:
-                writer.writeheader()
+            if not file_exists: writer.writeheader()
             writer.writerow(row_data)
-            
         print(f"💾 數據已儲存至: {file_path}")
-
     except Exception as e:
         print(f"❌ 儲存 CSV 失敗: {e}")
 
@@ -257,7 +238,6 @@ def fetch_market_data():
 
 def fetch_all_indices():
     results = {}
-    failed_keys = []
     print("🚀 開始依序抓取數據...")
 
     def run_fetcher(name, fetch_func):
@@ -288,24 +268,22 @@ def fetch_all_indices():
     if RUN_RISK_RATIO: results['RISK_RATIO'] = run_fetcher('RISK_RATIO', fetch_risk_on_off_ratio)
     if RUN_BTC: results['BTC'] = run_fetcher('BTC', fetch_bitcoin_trend)
     if RUN_RSI: results['RSI'] = run_fetcher('RSI', fetch_rsi_index)
-    
     if RUN_IWM: results['IWM'] = run_fetcher('IWM', fetch_iwm_trend)
     if RUN_HYG: results['HYG'] = run_fetcher('HYG', fetch_hyg_trend)
     if RUN_SOXX: results['SOXX'] = run_fetcher('SOXX', fetch_soxx_trend)
+    if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index) # VIX 現在也用 yfinance
 
-    # 爬蟲類
+    # 爬蟲與其他類
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
-    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_put_call_ratio_requests)
-    if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
     if RUN_CNN: results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
     if RUN_NAAIM: results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
     if RUN_SKEW: results['SKEW'] = run_fetcher('SKEW', fetch_skew_index)
     if RUN_ABOVE_200_DAYS: results['ABOVE_200_DAYS'] = run_fetcher('ABOVE_200_DAYS', fetch_above_200_days_average)
+    
+    # [變更] 使用模組化的函式 (自動回溯日期)
+    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_put_call_ratio)
 
-    for key, value in results.items():
-        if (isinstance(value, str) and "錯誤" in value) or value is None:
-            failed_keys.append(key)
-    return results, failed_keys
+    return results, []
 
 def get_indicator_status(key, value):
     try:
@@ -460,7 +438,7 @@ def send_discord_embed(results, market_text, summary_text):
             "title": f"📅 每日財經情緒日報 ({today_date})", 
             "color": color,
             "fields": fields,
-            "footer": {"text": "Github Actions Auto Bot (v2.9.1 Bug Fix)"},
+            "footer": {"text": "Github Actions Auto Bot (v3.0 Modular)"},
             "timestamp": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
         }]
     }
@@ -480,23 +458,12 @@ def pause_for_exit():
 
 if __name__ == "__main__":
     results, failed = fetch_all_indices()
-    
-    # 1. 抓取大盤文字 (顯示用)
     print("\n[Market] 正在抓取大盤資訊...")
     market_text = fetch_market_data()
-    
-    # 2. 計算總結
     print("[Analysis] 正在分析市場情緒...")
     summary_text = calculate_sentiment_summary(results)
-    
-    # 3. 發送通知
     print("\n正在發送 Discord 通知...")
     send_discord_embed(results, market_text, summary_text)
-    
-    # 4. 儲存數據到 CSV
     print("\n正在儲存歷史數據...")
     save_history_csv(results)
-    
     pause_for_exit()
-
-
