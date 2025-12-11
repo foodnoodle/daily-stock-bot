@@ -12,7 +12,7 @@ import pandas as pd
 # 引入原本的爬蟲模組
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
-from put_call_ratio import fetch_total_put_call_ratio
+from put_call_ratio import fetch_put_call_ratio_requests
 from naaim_index import fetch_naaim_exposure_index
 from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
@@ -295,7 +295,7 @@ def fetch_all_indices():
 
     # 爬蟲類
     if RUN_AAII: results['AAII'] = run_fetcher('AAII', fetch_aaii_bull_bear_diff)
-    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_total_put_call_ratio)
+    if RUN_PUT_CALL: results['PUT_CALL'] = run_fetcher('PUT_CALL', fetch_put_call_ratio_requests)
     if RUN_VIX: results['VIX'] = run_fetcher('VIX', fetch_vix_index)
     if RUN_CNN: results['CNN'] = run_fetcher('CNN', fetch_fear_greed_meter)
     if RUN_NAAIM: results['NAAIM'] = run_fetcher('NAAIM', fetch_naaim_exposure_index)
@@ -498,4 +498,5 @@ if __name__ == "__main__":
     save_history_csv(results)
     
     pause_for_exit()
+
 
