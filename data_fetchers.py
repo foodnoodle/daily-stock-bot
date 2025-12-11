@@ -1,4 +1,4 @@
-# --- data_fetchers.py ---
+# --- data_fetchers.py (v5.1: 修復 BTC 資料長度不足問題) ---
 import yfinance as yf
 
 # 1. 通用 yfinance 抓取器
@@ -28,7 +28,8 @@ def fetch_yf_trend(ticker):
 # 2. 客製化計算函式
 def fetch_bitcoin_trend():
     try:
-        d = yf.Ticker("BTC-USD").history(period="2d")
+        # [修正] 改為 5d，確保一定有足夠資料計算漲跌
+        d = yf.Ticker("BTC-USD").history(period="5d")
         if len(d) >= 2:
             chg = ((d['Close'].iloc[-1] - d['Close'].iloc[-2]) / d['Close'].iloc[-2]) * 100
             return f"{chg:+.2f}%"
