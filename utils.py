@@ -113,10 +113,13 @@ def send_discord(results, market_text, summary):
     }
     
     fields = []
+    
+    # 1. 總結與大盤
     fields.append({"name": "🔮 市場情緒總結", "value": summary, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text, "inline": False})
     fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
+    # 2. 四大分類
     cat_items = list(categories.items())
     for i, (cat_key, cat_name) in enumerate(cat_items):
         content = ""
@@ -140,8 +143,11 @@ def send_discord(results, market_text, summary):
             "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
             "color": embed_color,
             "fields": fields,
-            "thumbnail": {"url": thumbnail_url}, # [新增] 動態縮圖
-            "footer": {"text": "Bot v5.4 (Dynamic Thumbnail)"},
+            
+            # [重要修改] 使用 image 而非 thumbnail，避免擠壓文字欄位
+            "image": {"url": thumbnail_url},
+            
+            "footer": {"text": "Bot v5.5 (Wide Layout)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
