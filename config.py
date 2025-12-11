@@ -78,3 +78,13 @@ INDICATORS = {
         'thresholds': (1.0, 0.8), 'inverse': False
     }
 }
+IMAGES = {
+    # 🟢 多方 / Risk On (例如: 牛、火箭、綠色上漲圖)
+    'BULL': "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExbXR6MzhxOHF2dDE1N3F4cm1nbGRqazgyMmx5dHFydnZtd2kybm5teCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/IDpoYMdXd9osK1jmyd/giphy.gif", 
+    
+    # 🔴 空方 / Risk Off (例如: 熊、閃電、紅色下跌圖)
+    'BEAR': "https://media0.giphy.com/media/v1.Y2lkPTc5MGI3NjExaTZzd2kxd2xxOHJsNnh5Z3ljYWdjZm9iNXZuZTk5OTJqbjRzcGVxbyZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9cw/YqQ4o3QJcWRrdElNLq/giphy.gif",
+    
+    # ⚪ 中性 / 觀望 (例如: 天秤、平盤)
+    'NEUTRAL': "https://cdn-icons-png.flaticon.com/512/3135/3135706.png"
+}
