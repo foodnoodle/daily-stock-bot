@@ -1,12 +1,15 @@
 name: Manual Dev Test (手動開發測試)
 
 on:
-  # 只有手動觸發
-  workflow_dispatch:
+  workflow_dispatch: # 手動觸發
 
 jobs:
   test-dev:
     runs-on: ubuntu-latest
+    
+    # [關鍵] 確保有權限寫入儲存庫
+    permissions:
+      contents: write
 
     steps:
       - name: Checkout code
@@ -25,23 +28,24 @@ jobs:
         env:
           DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
         run: |
-          # 這裡改成新的檔名
+          # 這裡執行 dev_main.py
           python dev_main.py
-          
-      - name: Commit and Push Data (提交並保存數據)
+
+      # --- [新增步驟] 提交並保存 CSV 到 Github ---
+      - name: Commit and Push Data
         run: |
-          # 1. 設定機器人身分 (這會顯示在 Commit 紀錄中)
-          git config --global user.name "GitHub Actions Bot"
-          git config --global user.email "actions@github.com"
+          # 1. 設定機器人身分
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
           
-          # 2. 拉取最新的遠端程式碼 (避免多人同時寫入產生衝突)
+          # 2. 拉取最新程式碼 (避免衝突)
           git pull
           
-          # 3. 將新產生的 csv 加入版控
+          # 3. 強制加入 data 資料夾 (如果它是新的)
           git add data/history.csv
           
-          # 4. 提交變更 (如果沒有變更，例如假日沒開盤，則略過不報錯)
-          git commit -m "📈 Auto-update daily stock history" || exit 0
+          # 4. 提交 (如果檔案沒變動，git commit 會失敗，所以加上 || exit 0 讓它略過不報錯)
+          git commit -m "💾 Auto-update stock history CSV" || exit 0
           
-          # 5. 推送回儲存庫
+          # 5. 推送回倉庫
           git push
