@@ -1,11 +1,11 @@
-# --- utils.py ---
+# --- utils.py (v5.1: 支援 AAII 格式化顯示) ---
 import os
 import requests
 import datetime
 import csv
 import re
-from config import INDICATORS # 匯入設定檔以取得門檻值
-import data_fetchers as df    # 匯入抓取器以取得 SPX 價格
+from config import INDICATORS 
+import data_fetchers as df    
 
 def extract_numeric_value(text):
     if not isinstance(text, str): return ""
@@ -14,7 +14,12 @@ def extract_numeric_value(text):
     if match: return match.group()
     return ""
 
-def get_indicator_status(key, value_str):
+def get_indicator_status(key, value_in):
+    # [修正] 如果傳入的是 AAII 的 Tuple (Bull, Bear, Diff)，只取 Diff 來判斷
+    value_str = value_in
+    if key == 'AAII' and isinstance(value_in, tuple) and len(value_in) >= 3:
+        value_str = value_in[2] # 取出差值
+
     if not value_str or "Error" in str(value_str) or "N/A" in str(value_str):
         return "⚠️ 無法判讀"
     
@@ -96,8 +101,15 @@ def send_discord(results, market_text, summary):
         cat_indicators = {k: v for k, v in INDICATORS.items() if v['category'] == cat_key}
         for key, cfg in cat_indicators.items():
             val = results.get(key, "N/A")
+            
+            # [修正] 針對 AAII 進行特殊格式化
+            display_val = val
+            if key == 'AAII' and isinstance(val, tuple) and len(val) >= 3:
+                # 顯示格式：多44.3% | 空30.8%
+                display_val = f"多{val[0]}% | 空{val[1]}%"
+            
             status = get_indicator_status(key, val)
-            content += f"> {cfg['name']}: **{val}** ({status})\n"
+            content += f"> {cfg['name']}: **{display_val}** ({status})\n"
         fields.append({"name": cat_name, "value": content, "inline": False})
 
     data = {
@@ -105,7 +117,7 @@ def send_discord(results, market_text, summary):
             "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
             "color": 0x808080,
             "fields": fields,
-            "footer": {"text": "Bot v5.0 (Modularized)"},
+            "footer": {"text": "Bot v5.1 (Fixed AAII/BTC)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
@@ -127,7 +139,8 @@ def save_csv(results):
             raw = results.get(k, "")
             # AAII 修正邏輯
             if k == 'AAII' and isinstance(raw, tuple):
-                val = f"{raw[2]:.2f}"
+                # [修正] 差值取到小數點後 1 位
+                val = f"{raw[2]:.1f}"
             else:
                 val = extract_numeric_value(str(raw))
             row[k] = val
