@@ -1,10 +1,11 @@
-# --- utils.py (v5.2: 介面美化 - 增加分類間距) ---
+# --- utils.py (v5.4: 新增動態縮圖) ---
 import os
 import requests
 import datetime
 import csv
 import re
-from config import INDICATORS 
+# [變更] 記得匯入新的 IMAGES 設定
+from config import INDICATORS, IMAGES 
 import data_fetchers as df    
 
 def extract_numeric_value(text):
@@ -15,7 +16,7 @@ def extract_numeric_value(text):
     return ""
 
 def get_indicator_status(key, value_in):
-    # 針對 AAII 進行特殊處理: 取 Tuple 第三個值 (Diff)
+    # AAII 特殊處理
     value_str = value_in
     if key == 'AAII' and isinstance(value_in, tuple) and len(value_in) >= 3:
         value_str = value_in[2]
@@ -85,6 +86,25 @@ def send_discord(results, market_text, summary):
     url = os.environ.get("DISCORD_WEBHOOK_URL")
     if not url: return
 
+    # 計算多空以決定顏色與圖片
+    bulls = 0
+    bears = 0
+    for key, val in results.items():
+        status = get_indicator_status(key, val)
+        if "🟢" in status: bulls += 1
+        if "🔴" in status: bears += 1
+    
+    # 預設: 中性 (灰色)
+    embed_color = 0x95a5a6 
+    thumbnail_url = IMAGES['NEUTRAL']
+
+    if bulls > bears: 
+        embed_color = 0x2ecc71 # 綠色
+        thumbnail_url = IMAGES['BULL']
+    elif bears > bulls: 
+        embed_color = 0xe74c3c # 紅色
+        thumbnail_url = IMAGES['BEAR']
+
     categories = {
         'macro': '🌊 宏觀與資金 (Macro)',
         'struct': '🏗️ 結構與板塊 (Struct)',
@@ -93,25 +113,17 @@ def send_discord(results, market_text, summary):
     }
     
     fields = []
-    
-    # 1. 總結與大盤
     fields.append({"name": "🔮 市場情緒總結", "value": summary, "inline": False})
     fields.append({"name": "📊 美股大盤指數", "value": market_text, "inline": False})
-    
-    # [美化] 在大盤與指標之間增加一點間距
     fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
-    # 2. 四大分類 (增加間距邏輯)
     cat_items = list(categories.items())
-    
     for i, (cat_key, cat_name) in enumerate(cat_items):
         content = ""
         cat_indicators = {k: v for k, v in INDICATORS.items() if v['category'] == cat_key}
-        
         for key, cfg in cat_indicators.items():
             val = results.get(key, "N/A")
             
-            # AAII 顯示修正
             display_val = val
             if key == 'AAII' and isinstance(val, tuple) and len(val) >= 3:
                 display_val = f"多{val[0]}% | 空{val[1]}%"
@@ -120,17 +132,16 @@ def send_discord(results, market_text, summary):
             content += f"> {cfg['name']}: **{display_val}** ({status})\n"
             
         fields.append({"name": cat_name, "value": content, "inline": False})
-        
-        # [美化] 如果不是最後一個分類，就加一個空白欄位當作換行
         if i < len(cat_items) - 1:
             fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
     data = {
         "embeds": [{
             "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
-            "color": 0x808080,
+            "color": embed_color,
             "fields": fields,
-            "footer": {"text": "Bot v5.2 (UI Polished)"},
+            "thumbnail": {"url": thumbnail_url}, # [新增] 動態縮圖
+            "footer": {"text": "Bot v5.4 (Dynamic Thumbnail)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
@@ -150,7 +161,6 @@ def save_csv(results):
         }
         for k in keys:
             raw = results.get(k, "")
-            # AAII 修正邏輯: 差值取小數點後 1 位
             if k == 'AAII' and isinstance(raw, tuple):
                 val = f"{raw[2]:.1f}"
             else:
