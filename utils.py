@@ -1,22 +1,28 @@
-# --- utils.py (v5.4: 新增動態縮圖) ---
+# --- utils.py (v5.6: CSV 欄位格式修正版) ---
 import os
 import requests
 import datetime
 import csv
 import re
-# [變更] 記得匯入新的 IMAGES 設定
-from config import INDICATORS, IMAGES 
+from config import INDICATORS, IMAGES
 import data_fetchers as df    
 
 def extract_numeric_value(text):
+    """
+    提取字串中的數值
+    "-3.5%" -> "-3.5"
+    "+1.2%" -> "1.2"
+    "105.5 (Above)" -> "105.5"
+    """
     if not isinstance(text, str): return ""
+    # 移除 %, +, , 等非數值符號 (保留負號 -)
     clean_text = text.replace('%', '').replace('+', '').replace(',', '')
     match = re.search(r"[-+]?\d*\.\d+|\d+", clean_text)
     if match: return match.group()
     return ""
 
 def get_indicator_status(key, value_in):
-    # AAII 特殊處理
+    # 針對 AAII 進行特殊處理: 取 Tuple 第三個值 (Diff)
     value_str = value_in
     if key == 'AAII' and isinstance(value_in, tuple) and len(value_in) >= 3:
         value_str = value_in[2]
@@ -135,6 +141,7 @@ def send_discord(results, market_text, summary):
             content += f"> {cfg['name']}: **{display_val}** ({status})\n"
             
         fields.append({"name": cat_name, "value": content, "inline": False})
+        # 增加間距，除了最後一個
         if i < len(cat_items) - 1:
             fields.append({"name": "\u200b", "value": "\u200b", "inline": False})
 
@@ -143,11 +150,8 @@ def send_discord(results, market_text, summary):
             "title": f"📅 每日財經情緒日報 ({datetime.datetime.now().strftime('%Y-%m-%d')})",
             "color": embed_color,
             "fields": fields,
-            
-            # [重要修改] 使用 image 而非 thumbnail，避免擠壓文字欄位
-            "image": {"url": thumbnail_url},
-            
-            "footer": {"text": "Bot v5.5 (Wide Layout)"},
+            "image": {"url": thumbnail_url}, # 底部大圖
+            "footer": {"text": "Bot v5.6 (Fixed CSV Format)"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
@@ -155,28 +159,60 @@ def send_discord(results, market_text, summary):
     except Exception as e: print(f"Discord Error: {e}")
 
 def save_csv(results):
+    """
+    儲存 CSV，欄位順序與名稱嚴格依照使用者要求
+    """
     try:
-        if not os.path.exists("data"): os.makedirs("data")
+        folder = "data"
+        if not os.path.exists(folder): os.makedirs(folder)
         file = "data/history.csv"
-        keys = list(INDICATORS.keys())
-        fieldnames = ['Date', 'SPX_Price'] + keys
         
+        # [變更] 指定欄位順序與名稱
+        fieldnames = [
+            'Date', 'SPX_Price', 
+            'RSI', 'VIX', 'CNN', 'Put_Call', 
+            '10Y_Yield', 'DXY', 'BTC_Chg', 'HYG_Price', 
+            'Risk_Ratio', 'IWM_Price', 'SOXX_Price', 
+            'NAAIM', 'SKEW', 'AAII_Diff', 'Above_200MA'
+        ]
+        
+        # 準備 AAII 數值 (如果是 Tuple，取差值)
+        aaii_raw = results.get('AAII', "")
+        aaii_val = ""
+        if isinstance(aaii_raw, tuple) and len(aaii_raw) >= 3:
+            aaii_val = f"{aaii_raw[2]:.1f}"
+        else:
+            aaii_val = extract_numeric_value(str(aaii_raw))
+
+        # [變更] 手動映射 INDICATORS key 到指定的 CSV 欄位
         row = {
             'Date': datetime.datetime.now().strftime("%Y-%m-%d"),
-            'SPX_Price': df.get_sp500_price_raw()
+            'SPX_Price': df.get_sp500_price_raw(),
+            'RSI': extract_numeric_value(str(results.get('RSI', ''))),
+            'VIX': extract_numeric_value(str(results.get('VIX', ''))),
+            'CNN': extract_numeric_value(str(results.get('CNN', ''))),
+            'Put_Call': extract_numeric_value(str(results.get('PUT_CALL', ''))),
+            '10Y_Yield': extract_numeric_value(str(results.get('BOND_10Y', ''))),
+            'DXY': extract_numeric_value(str(results.get('DXY', ''))),
+            'BTC_Chg': extract_numeric_value(str(results.get('BTC', ''))),
+            'HYG_Price': extract_numeric_value(str(results.get('HYG', ''))),
+            'Risk_Ratio': extract_numeric_value(str(results.get('RISK_RATIO', ''))),
+            'IWM_Price': extract_numeric_value(str(results.get('IWM', ''))),
+            'SOXX_Price': extract_numeric_value(str(results.get('SOXX', ''))),
+            'NAAIM': extract_numeric_value(str(results.get('NAAIM', ''))),
+            'SKEW': extract_numeric_value(str(results.get('SKEW', ''))),
+            'AAII_Diff': aaii_val,
+            'Above_200MA': extract_numeric_value(str(results.get('ABOVE_200_DAYS', '')))
         }
-        for k in keys:
-            raw = results.get(k, "")
-            if k == 'AAII' and isinstance(raw, tuple):
-                val = f"{raw[2]:.1f}"
-            else:
-                val = extract_numeric_value(str(raw))
-            row[k] = val
 
+        # 寫入邏輯
         exists = os.path.isfile(file)
         with open(file, 'a', newline='', encoding='utf-8') as f:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
+            # 如果是新檔案，寫入標題列
             if not exists: writer.writeheader()
             writer.writerow(row)
-        print("💾 數據已儲存")
+            
+        print(f"💾 數據已儲存至: {file}")
+
     except Exception as e: print(f"CSV Error: {e}")
