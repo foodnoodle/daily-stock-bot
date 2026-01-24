@@ -137,7 +137,7 @@ def send_discord(results, market_text, summary):
             "color": embed_color,
             "fields": fields,
             "image": {"url": thumbnail_url}, 
-            "footer": {"text": "Bot v6.1 (Holiday Safe)"},
+            "footer": {"text": "財經 Discord 機器人"},
             "timestamp": datetime.datetime.now().isoformat()
         }]
     }
