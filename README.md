@@ -53,6 +53,11 @@
 * Python 3.11
 * Libraries: `yfinance`, `pandas`, `selenium`, `requests`
 * CI/CD: GitHub Actions
+  
+---
+## Discord 訊息截圖
+<img width="348" height="595" alt="image" src="https://github.com/user-attachments/assets/e6237e1b-a263-4c0d-9424-eedbee20fe9f" />
+<img width="352" height="562" alt="image" src="https://github.com/user-attachments/assets/899a1bbe-ef26-4b65-8690-4b7ff4eae96e" />
 
 ---
 *Created by Github Actions Auto Bot*
