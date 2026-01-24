@@ -40,7 +40,7 @@ def fetch_put_call_ratio():
                 target_date = datetime.date.today() - datetime.timedelta(days=i)
                 date_str = target_date.strftime("%Y-%m-%d")
                 
-                # 直接組裝網址，讓 Selenium 前往指定日期
+                # 組裝網址，讓 Selenium 前往指定日期
                 target_url = f"{base_url}?dt={date_str}"
                 # print(f"正在嘗試: {target_url}") # 除錯用
                 
@@ -51,7 +51,7 @@ def fetch_put_call_ratio():
                 
                 # 3. 檢查是否有資料
                 # CBOE 沒資料時通常不會有數據表格，或者會有 "Data not available" 字樣
-                # 我們直接嘗試定位那個數值
+                # 直接嘗試定位那個數值
                 # XPath: 尋找文字包含 "TOTAL PUT/CALL RATIO" 的欄位，並抓它隔壁的數值
                 xpath = "//td[contains(text(), 'TOTAL PUT/CALL RATIO')]/following-sibling::td[1]"
                 
@@ -76,6 +76,7 @@ def fetch_put_call_ratio():
         return f"執行錯誤: {e}"
         
     finally:
-        # 記得關閉瀏覽器，釋放記憶體
+        # 釋放記憶體
         if 'driver' in locals():
             driver.quit()
+
