@@ -8,7 +8,6 @@ from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
 from put_call_ratio import fetch_put_call_ratio
 
-# 這裡控制你要跑哪些指標
 INDICATORS = {
     # --- 1. 🌊 宏觀與資金 ---
     'BOND_10Y': {
