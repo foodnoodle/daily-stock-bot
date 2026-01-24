@@ -2,6 +2,8 @@
 
 這是一個基於 Python 的自動化財經分析機器人，運行於 **GitHub Actions**。它每天自動抓取華爾街關注的關鍵指標（宏觀、技術、籌碼、情緒），進行多空判讀，並將精美的報告發送至 **Discord**，同時將數據永久保存為 CSV 以供未來回測或 AI 訓練使用。
 
+<img width="1024" height="559" alt="image" src="https://github.com/user-attachments/assets/207b6f20-a965-48e0-9aba-402d627165f7" />
+
 ## ✨ 主要功能 (Key Features)
 
 * **全自動運行**：每天早上 08:00 (台灣時間) 自動執行，無需人工干預。
