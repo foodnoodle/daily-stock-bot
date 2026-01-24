@@ -56,8 +56,13 @@
   
 ---
 ## Discord 訊息截圖
-<img width="348" height="595" alt="image" src="https://github.com/user-attachments/assets/e6237e1b-a263-4c0d-9424-eedbee20fe9f" />
-<img width="352" height="562" alt="image" src="https://github.com/user-attachments/assets/899a1bbe-ef26-4b65-8690-4b7ff4eae96e" />
+<table>
+  <tr>
+    <td><img width="348" height="595" alt="image" src="https://github.com/user-attachments/assets/e6237e1b-a263-4c0d-9424-eedbee20fe9f" /></td>
+    <td><img width="351" height="604" alt="image" src="https://github.com/user-attachments/assets/858f2f50-256c-41ac-b48e-2d6adb743d3b" /></td>
+    <td><img width="354" height="602" alt="image" src="https://github.com/user-attachments/assets/a80abd51-0597-47c3-bffc-f3d58d27b8e8" /></td>
+  </tr>
+</table>
 
 ---
 *Created by Github Actions Auto Bot*
