@@ -10,23 +10,31 @@ import time
 import random
 
 def fetch_above_200_days_average():
-    """爬取高於200日線股票比例 (v3.0: Linux 防崩潰強化版)"""
+    """爬取高於200日線股票比例 (v4.0: 終極穩定版 - Eager Load + Debug Port)"""
     TARGET_URL = "https://en.macromicro.me/series/22718/sp-500-200ma-breadth"
     
     chrome_options = Options()
-    # --- 1. 基礎 Headless 設定 ---
+    
+    # --- 1. 載入策略優化 (關鍵！) ---
+    # 設定為 'eager'：只要 DOM 載入完成就開始動作，不等待圖片或重型 JS 跑完
+    # 這能大幅降低在複雜網頁崩潰的機率
+    chrome_options.page_load_strategy = 'eager'
+    
+    # --- 2. 基礎 Headless 設定 ---
     chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # --- 2. 關鍵修正：Linux 環境防崩潰參數 (解決 0x55 錯誤) ---
-    chrome_options.add_argument("--disable-gpu")                # 關閉 GPU 硬體加速 (Linux 必備)
-    chrome_options.add_argument("--disable-software-rasterizer") # 關閉軟體光柵化
-    chrome_options.add_argument("--disable-extensions")          # 關閉擴充功能以節省資源
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 不載入圖片 (大幅降低記憶體與渲染崩潰機率)
+    # --- 3. Linux CI 環境防崩潰大全 (解決 0x56 錯誤) ---
+    chrome_options.add_argument("--remote-debugging-port=9222") # [重要] 解決 CI 環境通訊崩潰
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--disable-software-rasterizer")
+    chrome_options.add_argument("--disable-features=VizDisplayCompositor") # [重要] 停用合成器以防渲染崩潰
+    chrome_options.add_argument("--disable-extensions")
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 不載入圖片
 
-    # --- 3. 偽裝機制 (繞過反爬蟲) ---
+    # --- 4. 偽裝機制 ---
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
@@ -41,20 +49,20 @@ def fetch_above_200_days_average():
     })
     
     try:
+        # 因為用了 eager 模式，get 會很快返回
         driver.get(TARGET_URL)
         
-        # 模擬人類隨機等待 (2~4秒即可，因為不載圖片速度會變快)
-        time.sleep(random.uniform(2, 4))
+        # 稍微等待一下讓動態內容生成
+        time.sleep(random.uniform(3, 5))
 
         wait = WebDriverWait(driver, 20)
-        # 等待數值出現
+        # 只要看到這個數值元素出現，就立刻抓取並撤退
         wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "span.val")))
         
         above_200_days_element = driver.find_element(By.CSS_SELECTOR, "span.val")
         above_200_days_value = above_200_days_element.text
         return above_200_days_value
     except Exception as e:
-        # 回傳更簡潔的錯誤訊息以免洗版
         return f"抓取錯誤: {str(e)[:50]}"
     finally:
         driver.quit()
