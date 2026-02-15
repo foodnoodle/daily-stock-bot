@@ -10,31 +10,33 @@ import time
 import random
 
 def fetch_above_200_days_average():
-    """爬取高於200日線股票比例 (v4.0: 終極穩定版 - Eager Load + Debug Port)"""
-    TARGET_URL = "https://en.macromicro.me/series/22718/sp-500-200ma-breadth"
+    """
+    爬取高於200日線股票比例 (v5.0: 切換資料源至 Barchart)
+    
+    舊來源: MacroMicro (因 GitHub CI 環境顯卡相容性問題與反爬蟲導致持續崩潰)
+    新來源: Barchart ($S5TH - S&P 500 Stocks Above 200-Day Average)
+    """
+    # Barchart 的 S&P 500 > 200DMA 指數代號是 $S5TH
+    TARGET_URL = "https://www.barchart.com/stocks/quotes/$S5TH"
     
     chrome_options = Options()
     
-    # --- 1. 載入策略優化 (關鍵！) ---
-    # 設定為 'eager'：只要 DOM 載入完成就開始動作，不等待圖片或重型 JS 跑完
-    # 這能大幅降低在複雜網頁崩潰的機率
-    chrome_options.page_load_strategy = 'eager'
+    # --- 1. 載入策略 ---
+    chrome_options.page_load_strategy = 'eager' # 不用等廣告載入完
     
-    # --- 2. 基礎 Headless 設定 ---
+    # --- 2. Headless 設定 ---
     chrome_options.add_argument("--headless=new") 
     chrome_options.add_argument("--no-sandbox")
     chrome_options.add_argument("--disable-dev-shm-usage")
     chrome_options.add_argument("--window-size=1920,1080")
     
-    # --- 3. Linux CI 環境防崩潰大全 (解決 0x56 錯誤) ---
-    chrome_options.add_argument("--remote-debugging-port=9222") # [重要] 解決 CI 環境通訊崩潰
+    # --- 3. 防崩潰參數 (保留以策安全) ---
     chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--disable-software-rasterizer")
-    chrome_options.add_argument("--disable-features=VizDisplayCompositor") # [重要] 停用合成器以防渲染崩潰
+    chrome_options.add_argument("--disable-features=VizDisplayCompositor")
     chrome_options.add_argument("--disable-extensions")
-    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 不載入圖片
-
-    # --- 4. 偽裝機制 ---
+    chrome_options.add_argument("--blink-settings=imagesEnabled=false") # 不載圖
+    
+    # --- 4. 偽裝機制 (Barchart 對 User-Agent 檢查較嚴格) ---
     chrome_options.add_argument('user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36')
     chrome_options.add_argument('--disable-blink-features=AutomationControlled')
     chrome_options.add_experimental_option('excludeSwitches', ['enable-automation'])
@@ -49,20 +51,31 @@ def fetch_above_200_days_average():
     })
     
     try:
-        # 因為用了 eager 模式，get 會很快返回
         driver.get(TARGET_URL)
         
-        # 稍微等待一下讓動態內容生成
-        time.sleep(random.uniform(3, 5))
+        # Barchart 有時會有 Cloudflare 驗證，稍微等待
+        time.sleep(random.uniform(3, 6))
 
         wait = WebDriverWait(driver, 20)
-        # 只要看到這個數值元素出現，就立刻抓取並撤退
-        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, "span.val")))
         
-        above_200_days_element = driver.find_element(By.CSS_SELECTOR, "span.val")
-        above_200_days_value = above_200_days_element.text
-        return above_200_days_value
+        # Barchart 的價格通常顯示在 span 內，class 包含 status_last 或 last-change
+        # 我們嘗試捕捉主要的價格區塊
+        # CSS Selector: 尋找含有 'last-change' 的 span (這是 Barchart 慣用的價格 class)
+        selector = "span.last-change"
+        
+        wait.until(EC.presence_of_element_located((By.CSS_SELECTOR, selector)))
+        
+        price_element = driver.find_element(By.CSS_SELECTOR, selector)
+        value = price_element.text.strip().replace('%', '') # 移除可能出現的 % 符號
+        
+        # 簡單驗證抓到的是不是數字
+        try:
+            float(value)
+            return value
+        except ValueError:
+            return f"抓取內容非數值: {value}"
+
     except Exception as e:
-        return f"抓取錯誤: {str(e)[:50]}"
+        return f"Barchart 抓取錯誤: {str(e)[:100]}"
     finally:
         driver.quit()
