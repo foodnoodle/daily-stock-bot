@@ -15,7 +15,7 @@ INDICATORS = {
         'thresholds': (3.5, 4.5), 'inverse': True, 'correction': 0.1
     },
     'DXY': {
-        'name': '💵 美元 DXY', 'category': 'macro', 'type': 'price', 'ticker': 'DX-Y.NYB',
+        'name': '💵 美元 DXY', 'category': 'macro', 'type': 'price', 'ticker': 'DX=F',
         'thresholds': (101, 105), 'inverse': True
     },
     'HYG': {
