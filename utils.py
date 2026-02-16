@@ -60,8 +60,8 @@ def get_indicator_status(key, value_in):
             return "⚪ 中性"
 
         if cfg.get('inverse'):
-            if val <= g_limit: return "🟢 偏多 (超賣/恐懼)"
-            if val >= r_limit: return "🔴 偏空 (過熱/貪婪)"
+            if val <= g_limit: return "🟢 偏多"
+            if val >= r_limit: return "🔴 偏空"
         else:
             if val >= g_limit: return "🟢 偏多"
             if val <= r_limit: return "🔴 偏空"
