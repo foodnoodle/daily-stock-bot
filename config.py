@@ -4,15 +4,13 @@ import data_fetchers as df # 匯入剛剛建立的 yfinance 抓取器
 from aaii_index import fetch_aaii_bull_bear_diff
 from fear_greed_index import fetch_fear_greed_meter
 from naaim_index import fetch_naaim_exposure_index
-from skew_index import fetch_skew_index
 from above_200_days_average import fetch_above_200_days_average
 from put_call_ratio import fetch_put_call_ratio
-from treasury_yield import fetch_10y_treasury_yield
 
 INDICATORS = {
     # --- 1. 🌊 宏觀與資金 ---
     'BOND_10Y': {
-        'name': '🇺🇸 10年債', 'category': 'macro', 'type': 'external', 'func': fetch_10y_treasury_yield,
+        'name': '🇺🇸 10年債', 'category': 'macro', 'type': 'price', 'ticker': '^TNX',
         'thresholds': (3.5, 4.5), 'inverse': True
     },
     'DXY': {
@@ -66,7 +64,7 @@ INDICATORS = {
         'thresholds': (40, 90), 'inverse': True
     },
     'SKEW': {
-        'name': '🦢 黑天鵝 SKEW', 'category': 'fund', 'type': 'external', 'func': fetch_skew_index,
+        'name': '🦢 黑天鵝 SKEW', 'category': 'fund', 'type': 'price', 'ticker': '^SKEW',
         'thresholds': (120, 140), 'inverse': True
     },
     'AAII': {
